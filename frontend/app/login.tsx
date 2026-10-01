@@ -130,5 +130,5 @@ const styles = StyleSheet.create({
   quickHdr: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: spacing.sm },
   quickBtn: { paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surface, marginBottom: spacing.sm },
   quickRole: { fontSize: 14, fontWeight: "900", color: colors.onSurface, letterSpacing: 1 },
-  quickEmail: { fontSize: 11, color: colors.muted, marginTop: 2, fontFamily: "Courier" },
+  quickEmail: { fontSize: 11, color: colors.muted, marginTop: 2 },
 });

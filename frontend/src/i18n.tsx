@@ -76,6 +76,13 @@ const D: Dict = {
   total_items: { en: "Total Items", hi: "कुल आइटम" },
   total_weight: { en: "Total Weight", hi: "कुल वजन" },
   select_action: { en: "Select action", hi: "कार्य चुनें" },
+
+  slip_mismatch: { en: "SLIP MISMATCH — OFFICE REVIEW", hi: "स्लिप से अंतर — ऑफिस जाँच" },
+  slip_vehicle_differs: { en: "Vehicle differs from slip", hi: "गाड़ी नंबर स्लिप से अलग है" },
+  slip_weight_differs: { en: "Weight differs from slip", hi: "वजन स्लिप से अलग है" },
+  slip_warn_save: { en: "You can save, but the entry will be flagged for office review", hi: "आप सहेज सकते हैं, पर एंट्री ऑफिस जाँच के लिए फ़्लैग होगी" },
+  slip_flagged_saved: { en: "Saved — flagged for office review", hi: "सहेजा गया — ऑफिस जाँच के लिए फ़्लैग" },
+  slip_match_ok: { en: "Matches slip", hi: "स्लिप से मेल खाता है" },
 };
 
 type I18n = {

@@ -131,10 +131,12 @@ export default function EntriesScreen() {
                   {e.direction === "inward" ? "IN · आवक" : "OUT · जावक"}
                 </Text>
                 <Text style={s.entryNo}>{e.entry_number}</Text>
+                {e.slip_mismatch_flag ? <Text style={s.flag}>⚠ SLIP</Text> : null}
                 {e.variance_flagged ? <Text style={s.flag}>⚠ {e.variance_pct?.toFixed(2)}%</Text> : null}
               </View>
               <Text style={s.dim}>{e.thickness_mm}×{e.width_mm}×{e.length_mm} mm · {e.pieces} pcs</Text>
               <View style={s.cardRow}>
+                <Text style={s.meta}>📅 {new Date(e.entry_date || e.created_at).toLocaleDateString()}</Text>
                 <Text style={s.meta}>🚚 {e.vehicle_number}</Text>
                 <Text style={s.meta}>{e.theoretical_weight_kg.toFixed(1)} kg</Text>
               </View>
@@ -167,9 +169,9 @@ const s = StyleSheet.create({
   card: { padding: spacing.md, backgroundColor: colors.surface, borderWidth: 1.5, borderColor: colors.borderStrong, borderLeftWidth: 6 },
   cardTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm, flexWrap: "wrap" },
   badge: { fontSize: 11, fontWeight: "900", letterSpacing: 1, paddingHorizontal: 8, paddingVertical: 4 },
-  entryNo: { fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
+  entryNo: { fontSize: 13, fontWeight: "900", color: colors.onSurface },
   flag: { fontSize: 11, fontWeight: "900", color: colors.error, marginLeft: "auto" },
-  dim: { fontSize: 20, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier", marginTop: 6 },
+  dim: { fontSize: 20, fontWeight: "900", color: colors.onSurface, marginTop: 6 },
   cardRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
   meta: { fontSize: 12, color: colors.muted, fontWeight: "700" },
   cardFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: spacing.sm, flexWrap: "wrap", gap: spacing.sm },

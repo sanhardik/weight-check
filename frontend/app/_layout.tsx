@@ -1,34 +1,97 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
-import { LogBox, Platform, Text, View, Pressable } from "react-native";
+import { LogBox, Platform, StyleSheet, Text, TextInput } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { useEffect } from "react";
-import { useFonts } from "expo-font";
+import { useEffect, useState } from "react";
+import * as Font from "expo-font";
+import { Asset } from "expo-asset";
 
 import { ErrorBoundary } from "@/src/components/error-boundary";
 import { queryClient } from "@/src/query-client";
 import { AuthProvider } from "@/src/auth";
-import { I18nProvider } from "@/src/i18n";
+import { I18nProvider, useI18n } from "@/src/i18n";
 import { ToastHost } from "@/src/ui/Toast";
-import { colors } from "@/src/theme";
+import { colors, appFontFamily } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);
 
-export default function RootLayout() {
-  // Nunito Sans — soothing, high-legibility sans with warm humanist curves
-  const [loaded] = useFonts({
-    NunitoSans: "https://fonts.gstatic.com/s/nunitosans/v15/pe0qMImSLYBIv1o4X1M8ce2xCx3yop4tQpF_MeTm0lfGWVpNn64CL7U8upHZIbMV51Q42ptCp7t1R-s.ttf",
-    "NunitoSans-Bold": "https://fonts.gstatic.com/s/nunitosans/v15/pe0qMImSLYBIv1o4X1M8ce2xCx3yop4tQpF_MeTm0lfGWVpNn64CL7U8upHZIbMV51Q4FptCp7t1R-s.ttf",
-  });
+const POPPINS = {
+  Poppins: require("../assets/fonts/Poppins-Regular.ttf"),
+  "Poppins-SemiBold": require("../assets/fonts/Poppins-SemiBold.ttf"),
+  "Poppins-Bold": require("../assets/fonts/Poppins-Bold.ttf"),
+  "Poppins-ExtraBold": require("../assets/fonts/Poppins-ExtraBold.ttf"),
+};
 
-  // Set global text defaults once fonts are loaded.
+/**
+ * Loads Poppins (with Devanagari glyphs). useFonts() proved flaky on web with
+ * local requires, so on web we load explicit FontFaces from the metro asset
+ * URLs; native uses expo-font as usual.
+ */
+function usePoppins(): boolean {
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    if (!loaded) return;
-    const txt: any = Text;
-    txt.defaultProps = txt.defaultProps || {};
-    txt.defaultProps.style = [{ fontFamily: "NunitoSans", color: colors.onSurface }, txt.defaultProps.style];
-  }, [loaded]);
+    (async () => {
+      try {
+        if (Platform.OS === "web") {
+          await Promise.all(
+            Object.entries(POPPINS).map(async ([name, mod]) => {
+              const url = Asset.fromModule(mod).uri;
+              const face = new FontFace(name, `url('${url}')`);
+              await face.load();
+              (document as any).fonts.add(face);
+            })
+          );
+        } else {
+          await Font.loadAsync(POPPINS);
+        }
+      } catch {
+        // Font failure must never block the app — system font fallback
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+  return loaded;
+}
+
+/**
+ * Language-aware default font for every Text / TextInput that does not set an
+ * explicit fontFamily: Hindi → Poppins, English → San Francisco (system font on
+ * Apple platforms). React 19 dropped defaultProps for function components, so we
+ * patch render once and just swap the active family on language change.
+ */
+function patchComponent(comp: any) {
+  if (comp.__fontPatched) return;
+  const oldRender = comp.render;
+  comp.__oldRender = oldRender;
+  comp.__fontPatched = true;
+  comp.render = function (props: any, ref: any) {
+    const flat = StyleSheet.flatten(props?.style) || {};
+    const base: any = {};
+    if (!flat.fontFamily && comp.__currentFont) base.fontFamily = comp.__currentFont;
+    if (!flat.color) base.color = colors.onSurface;
+    const style = Object.keys(base).length ? [base, props.style] : props.style;
+    return comp.__oldRender({ ...props, style }, ref);
+  };
+}
+
+patchComponent(Text);
+patchComponent(TextInput);
+
+function FontDefaults({ fontsLoaded }: { fontsLoaded: boolean }) {
+  const { lang } = useI18n();
+  useEffect(() => {
+    if (!fontsLoaded) return;
+    const family = appFontFamily(lang);
+    (Text as any).__currentFont = family;
+    (TextInput as any).__currentFont = family;
+  }, [lang, fontsLoaded]);
+  return null;
+}
+
+export default function RootLayout() {
+  const loaded = usePoppins();
 
   return (
     <ErrorBoundary>
@@ -37,6 +100,7 @@ export default function RootLayout() {
           <KeyboardProvider>
             <AuthProvider>
               <I18nProvider>
+                <FontDefaults fontsLoaded={loaded} />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }} />
                 <ToastHost />
               </I18nProvider>

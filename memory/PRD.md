@@ -56,6 +56,27 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 8 — Slip Validation, Fonts, Palette, Test Fixes (shipped)
+- **Weighment slip smart validation**: `/api/vision/weight` now extracts BOTH NET weight AND vehicle number (Indian plate format) from the slip. Entry create (`/entries/inward|outward`) accepts `slip_ocr_weight_kg` + `slip_ocr_vehicle_number`; backend `compute_slip_mismatch()` cross-checks against entered values (plate normalised: case/spaces ignored; weight tolerance 0.35%). Mismatch → `slip_mismatch_flag=true` + human-readable `slip_mismatch_details[]` saved on the entry. Labour sees an amber warning but save is NOT blocked; entry is flagged for office/admin review. Office/admin correction (`PATCH /entries/{id}/correction`, now with vehicle input in UI) recomputes and CLEARS the flag automatically when fixed.
+- Entry detail: red "⚠ SLIP MISMATCH — OFFICE REVIEW" banner (testID `slip-mismatch-banner`) with detail lines; green "SLIP OCR · Matches slip ✓" row when matched. Entries list shows "⚠ SLIP" badge.
+- **Fonts**: Hindi → Poppins (Regular/SemiBold/Bold/ExtraBold, bundled TTFs with Devanagari, loaded via explicit FontFace on web / Font.loadAsync on native). English → San Francisco (system font on Apple, system sans elsewhere). Applied via render-patch on Text/TextInput (React 19 dropped defaultProps). Hardcoded `Courier` fontFamily removed app-wide.
+- **Palette**: White surface, Light Blue brand (#3E8FD0), Light Green success (#3D9E66), dark-blue-slate text/borders (#17324D).
+- **Flaky tests fixed**: iter3 `test_parties_sorted_deduplicated` (endpoint returns dicts since iter4 — test now maps names), iter7 `TestOutwardFIFO` (grade parameterized with uuid suffix per run).
+- Bug found & fixed by testing agent: EntryForm OCR call sent JSON to the Form-only endpoint (400) — now multipart FormData; real OCR verified E2E (10000 kg + MH12AB1234 read from a generated slip).
+
+170/170 backend tests pass (17 new iter9 + 153 regression). Frontend verified: banner, correction-clears-flag flow, Hindi=Poppins / English=SF, new theme.
+
+## Iteration 7 — Multi-Line Entries, Catalog, Vehicle-First (shipped)
+- **Settings → Catalog** screen (admin + office) with chip tabs for Mukadams / Brokers / Grades / Thickness / Width / Length. Admin can add + remove; office can add. Unified `/api/catalog/{kind}` endpoint handles numeric and string kinds.
+- **Pre-fed catalogs**: 5 grades (IS2062, E350, SA516, S355, SS400), 10 thicknesses (3→25 mm), 6 widths, 6 lengths, 4 mukadams, 4 brokers.
+- **Labour inputs are dropdown-only** on Inward & Outward — thickness, width, length, grade, broker all come from the catalog. Office / admin can add new values from the Settings screen.
+- **Multi-line entries**: every inward and outward can have N product lines. Backend `line_items[]` is the source of truth; top-level fields are kept as a view of line_items[0] (pieces + weight are summed). Inventory, FIFO auto-match, stock guardrail and low-stock alerts all aggregate across `$unwind: line_items`.
+- **Legacy entries migrated on startup** — existing single-item entries get lifted into `line_items`.
+- **Entry Date** field — labour picks or edits the date, defaults to today; shown on entry detail and entries list.
+- **Vehicle-first UI** — form now flows: Vehicle → Products → Date → Weight → Slip. Driver + QR scan moved to the vehicle section.
+
+24/24 iter_8 backend tests + 110/112 full regression (2 pre-existing flaky tests unchanged).
+
 ## Iteration 6 — Hemant Enterprise rebrand + bug fix (shipped)
 - **App renamed to Hemant Enterprise** (login brand, app.json name, email from_name)
 - **Variance threshold 0.2% → 0.35%** (backend constant + all i18n labels + frontend inline check)

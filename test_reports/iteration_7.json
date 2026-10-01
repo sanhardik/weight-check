@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 8 backend testing: Catalog CRUD (grades/thicknesses/widths/lengths/mukadams/brokers), legacy mukadams/brokers shim, multi line-item inward/outward with summed theoretical weight & total pieces, backward-compat flat-field inward, entry_date persistence, variance aggregated across total theoretical weight, inventory + low-stock aggregation across line_items, FIFO auto-match on single-line outward. All 24 iter8 tests PASS. Full regression iter1..iter7 (including iter5) = 110/112 pass; the 2 failures are pre-existing data-pollution flakes already documented in iteration_5.json / iteration_6.json and are NOT caused by iter8 changes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/parties", "issue": "test_parties_sorted_deduplicated — pre-existing flaky test; prior-run data in DB breaks case-insensitive sort invariant. Not iter8 regression."},
+      {"endpoint": "POST /api/entries/outward (FIFO)", "issue": "test_fifo_matches_oldest in iter7 suite uses a non-unique hard-coded grade 'FIFO-GRD-7'; older inwards from prior runs beat the newly created ones. Not iter8 regression — recommend parameterizing the grade with a unique suffix in the test."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter8_features.py",
+    "/app/test_reports/pytest/pytest_results_iter8.xml",
+    "/app/test_reports/pytest/pytest_results_iter8_regression.xml"
+  ],
+  "action_items": [
+    "None blocking. Backend iteration 8 is production-ready for the requested features.",
+    "Optional cleanup: iter7 FIFO test and iter3 parties test should randomize grade/party names per run to avoid DB-state flakes. Not an iter8 blocker."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2099 lines — exceeds 700-line guideline; recommend splitting (entries, catalog, analytics, email, pdf) into modules for maintainability.",
+    "catalog_<kind> collections are created lazily per request via db[f'catalog_{kind}']; no indexes created on them. Low volume so acceptable, but add indexes on _id (default) + unique on value if list grows.",
+    "In correct_entry() the stock-guardrail pipeline queries top-level pieces/thickness fields instead of line_items[*]. After iter8 migration all entries use line_items, so this guardrail may miscount in multi-line scenarios. Report-only; not covered by requested test matrix.",
+    "No pagination on GET /api/entries (defaults limit=200). Fine for current scale.",
+    "Catalog POST returns {'value': ...} without an 'ok' flag; consistent but idempotent duplicates return same 200 — correct per spec."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter8_features.py (new)"
+  ],
+  "success_rate": {"backend": "100% on iter8 (24/24); 98% on full regression (110/112, 2 pre-existing flakes)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Tests create TEST_* grades/brokers and unique-prefixed inventory specs (PYTEST_MULTI_*, FIFO_*, IT8-*) to avoid cross-test interference. These are leftover in DB but will not block subsequent runs due to unique uuid-based suffixes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter8 feature file at /app/backend/tests/test_steeltrack_iter8_features.py covers all catalog + line_items + entry_date + variance + inventory aggregation + legacy shim scenarios. The 2 known-flaky tests (iter3 TestParties.test_parties_sorted_deduplicated, iter7 TestOutwardFIFO.test_fifo_matches_oldest) continue to fail intermittently due to prior-run DB state; main agent should randomize their test data in a future cleanup pass.",
+  "rca_of_issue": "N/A — no new bugs. Pre-existing flakes RCA: both tests assert against the FULL state of a shared collection (parties list / FIFO ordering) and don't scope by test-run uuid. First run of iter5 passed because DB was cleaner; later runs accumulate entries that break the invariants. Mitigation = parameterize test data per run (grade = f'FIFO-GRD-{uuid.uuid4().hex[:4]}')."
+}

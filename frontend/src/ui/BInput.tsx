@@ -41,7 +41,6 @@ const s = StyleSheet.create({
     paddingVertical: spacing.md,
     fontSize: 18,
     color: colors.onSurface,
-    fontFamily: "Courier",
     fontWeight: "700",
   },
   suffix: {

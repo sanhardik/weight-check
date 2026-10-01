@@ -44,6 +44,7 @@ export default function Home() {
   }
   if (user.role === "admin" || user.role === "office") {
     tiles.push({ testID: "tile-entries", en: "ENTRIES", hi: "एंट्री सूची", href: "/entries", bg: colors.surface, fg: colors.onSurface, sub: "VIEW · EDIT · EXPORT" });
+    tiles.push({ testID: "tile-settings", en: "SETTINGS · CATALOG", hi: "सेटिंग्स", href: "/settings", bg: colors.surfaceSecondary, fg: colors.onSurface, sub: "BROKERS · MUKADAMS · GRADES · DIMENSIONS" });
   }
   tiles.push({ testID: "tile-inventory", en: "INVENTORY", hi: "स्टॉक स्थिति", href: "/inventory", bg: colors.surfaceSecondary, fg: colors.onSurface, sub: "LIVE STOCK" });
   if (user.role === "admin") {
@@ -216,7 +217,7 @@ const s = StyleSheet.create({
   statRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
   statCell: { flex: 1, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong },
   statLbl: { fontSize: 11, fontWeight: "900", letterSpacing: 2 },
-  statVal: { fontSize: 28, fontWeight: "900", fontFamily: "Courier", marginTop: 4 },
+  statVal: { fontSize: 28, fontWeight: "900", marginTop: 4 },
   statUnit: { fontSize: 10, fontWeight: "700", letterSpacing: 1, marginTop: 2, opacity: 0.9 },
 
   chartWrap: { flexDirection: "row", alignItems: "flex-end", gap: 4, height: 80, borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, paddingBottom: 4 },
@@ -224,7 +225,7 @@ const s = StyleSheet.create({
   barStack: { flexDirection: "row", gap: 2, alignItems: "flex-end", height: 65 },
   barIn: { width: 7, backgroundColor: colors.brand },
   barOut: { width: 7, backgroundColor: colors.surfaceInverse },
-  barLbl: { fontSize: 8, fontWeight: "900", letterSpacing: 0.5, color: colors.muted, marginTop: 2, fontFamily: "Courier" },
+  barLbl: { fontSize: 8, fontWeight: "900", letterSpacing: 0.5, color: colors.muted, marginTop: 2 },
 
   legendRow: { flexDirection: "row", alignItems: "center", marginTop: spacing.sm, gap: spacing.md, flexWrap: "wrap" },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
@@ -237,17 +238,17 @@ const s = StyleSheet.create({
   lowStockCard: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.error, backgroundColor: colors.surface },
   lowStockHdr: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
   lowStockTitle: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.error },
-  lowStockHint: { fontSize: 10, fontWeight: "900", letterSpacing: 1, color: colors.muted, fontFamily: "Courier" },
+  lowStockHint: { fontSize: 10, fontWeight: "900", letterSpacing: 1, color: colors.muted },
   lowStockRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider },
-  lowStockDim: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
-  lowStockConsume: { fontSize: 10, color: colors.muted, fontWeight: "900", letterSpacing: 1, fontFamily: "Courier", marginTop: 2 },
-  lowStockPcs: { fontSize: 20, fontWeight: "900", color: colors.error, fontFamily: "Courier", marginLeft: spacing.sm },
+  lowStockDim: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface },
+  lowStockConsume: { fontSize: 10, color: colors.muted, fontWeight: "900", letterSpacing: 1, marginTop: 2 },
+  lowStockPcs: { fontSize: 20, fontWeight: "900", color: colors.error, marginLeft: spacing.sm },
   lowStockMore: { fontSize: 10, fontWeight: "900", color: colors.muted, letterSpacing: 1, marginTop: 6 },
   sectionTitle: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: spacing.xs },
   topRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider, gap: spacing.sm },
-  topRank: { fontSize: 13, fontWeight: "900", color: colors.brand, fontFamily: "Courier", width: 24 },
+  topRank: { fontSize: 13, fontWeight: "900", color: colors.brand, width: 24 },
   topName: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface },
-  topWeight: { fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
+  topWeight: { fontSize: 13, fontWeight: "900", color: colors.onSurface },
 
   grid: { gap: spacing.md, marginTop: spacing.sm },
   tile: { minHeight: 110, padding: spacing.lg, borderWidth: 1.5, borderColor: colors.borderStrong, justifyContent: "space-between" },

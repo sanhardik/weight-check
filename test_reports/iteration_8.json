@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 9 full-stack testing. BACKEND 100%: new iter9 suite 17/17 PASS (vision contract 400/404/auth; REAL OpenAI vision E2E on a generated weighment slip -> weight_kg=10000 & vehicle_number=MH12AB1234 exact; inward match/mismatch; plate normalization for spaces+case; weight-only mismatch; correction clears flag + history + role gating; still-mismatched keeps flag; outward flow; GET fields). FULL REGRESSION 153/153 PASS incl. the 2 previously-flaky tests (iter3 parties, iter7 FIFO) — flake fixes confirmed. FRONTEND: new theme verified (white surface, brand #3E8FD0 = rgb(62,143,208), zero orange leftovers); navigation login/home/inward/entries/inventory/entry-detail OK; entries list '⚠ SLIP' badge OK; entry detail red '⚠ SLIP MISMATCH — OFFICE REVIEW' banner (rgb(217,85,63)) with both human-readable detail lines OK; matched entry shows green 'SLIP OCR · Matches slip ✓' row OK; office weight-correction via UI recomputes flag + logs history OK. TWO frontend bugs found: (1) CRITICAL OCR integration bug — EntryForm sent JSON to the Form-only /vision/weight endpoint so in-app OCR ALWAYS failed (amber warning could never appear); I applied the minimal FormData fix and then verified the whole labour flow E2E (photo upload -> real OCR auto-fill 10000kg -> amber '⚠ Vehicle differs from slip' warning testID slip-mismatch-warning -> save NOT blocked -> entry persisted flagged with slip_ocr fields + photo). (2) HIGH — Hindi Poppins font never applies (React 19 removed defaultProps for function components; _layout.tsx mutates Text.defaultProps.style which is a no-op in react-native-web 0.21): all Devanagari text computes to '-apple-system...' system sans, no tofu but requirement unmet. (3) HIGH — correction form on entry detail lacks a vehicle_number input (corr-vehicle missing), so vehicle mismatches can never be cleared via UI even though backend PATCH supports vehicle_number and the banner instructs office to correct below.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "EntryForm OCR integration (FIXED by tester)", "issue": "pickPhoto called apiFetch('/vision/weight', body: JSON.stringify({slip_photo_path})) but backend declares slip_photo_path as Form(...) — JSON body returns 400 'Provide file or slip_photo_path', so OCR always failed in the real app (toast 'OCR skipped'), ocrWeight/ocrVehicle never set, amber warning unreachable. Verified RCA via curl: JSON->400, multipart->200 with correct weight+vehicle. Fixed by sending FormData. Reference: /app/frontend/src/screens/EntryForm.tsx:178", "testID": "slip-mismatch-warning", "priority": "CRITICAL"},
+      {"component": "FontDefaults in app/_layout.tsx", "issue": "Hindi -> Poppins never applies: React 19.2.3 removed defaultProps for function components, so Text.defaultProps.style / TextInput.defaultProps.style mutation is a no-op with react-native-web 0.21 function components. Measured computed fontFamily of Devanagari text on login (after toggle), home (after toggle), and home/inward mounted fresh under lang=hi — always '-apple-system, BlinkMacSystemFont, ...sans-serif', never Poppins. Glyphs render via browser fallback (no tofu) but requirement is unmet. Reference: /app/frontend/app/_layout.tsx:23-36", "testID": "lang-toggle", "priority": "HIGH"},
+      {"component": "Entry detail correction block", "issue": "No vehicle_number correction input (no corr-vehicle testID) although CorrectionUpdate supports vehicle_number and the mismatch banner says 'Correct the entry below — the flag clears automatically'. Verified via UI: weight-only correction cleared the weight detail but 'Vehicle differs from slip' persists with no UI remedy — office cannot clear vehicle mismatches without API calls. Reference: /app/frontend/app/entry/[id].tsx:253-262", "testID": "correction-block", "priority": "HIGH"}
+    ],
+    "integration_issues": [
+      {"flow": "Labour inward -> slip photo -> OCR -> amber warning -> save", "issue": "Was fully broken by the JSON-vs-Form bug (now fixed and verified E2E with real OpenAI OCR: weight auto-filled 10000, warning shown, save not blocked, entry INW-20261001-0324 persisted with slip_mismatch_flag=true and 1 detail)", "affected_testIDs": ["pick-photo-btn", "slip-mismatch-warning", "save-entry-btn"]}
+    ],
+    "design_issues": [
+      {"screen": "login", "issues": ["DEMO ACCOUNTS quick buttons only fill credentials and do not submit (by design) — potentially confusing; consider auto-submit or clearer label"]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter9_slip.py",
+    "/app/test_reports/pytest/pytest_results_iter9.xml",
+    "/app/test_reports/pytest/pytest_results_iter9_full.xml"
+  ],
+  "action_items": [
+    "Fix Hindi Poppins: replace the Text.defaultProps mutation in app/_layout.tsx (no-op under React 19 + RNW 0.21). Options: wrap the app tree in a root View with style={{flex:1, fontFamily: appFontFamily(lang)}} (font-family inherits on web; keep defaultProps path for native), or introduce a custom AppText component used instead of raw Text.",
+    "Add a vehicle_number input (testID corr-vehicle) to the correction block in app/entry/[id].tsx and include it in CorrectionUpdate PATCH so office can clear vehicle mismatches via UI.",
+    "Optional UX: make login demo-account buttons submit after filling, or relabel to 'FILL'.",
+    "Optional cleanup: 3 pre-existing unused-var lint warnings in EntryForm.tsx (TextInput import, addCatalogValue, labourLocked)."
+  ],
+  "critical_code_review_comments": [
+    "server.py 2163 lines — still exceeds the 700-line guideline; split into modules (entries, catalog, vision, analytics, email/pdf).",
+    "compute_slip_mismatch and _norm_plate are clean; tolerance reuses WEIGHT_TOLERANCE_PCT=0.35 correctly; correction re-evaluates flag only when actual_weight_kg/vehicle_number patched (correct).",
+    "Vision endpoint returns vehicle_number in contract and handles labour-ownership check on referenced uploads (403) — good.",
+    "Font approach violated platform reality (React 19) — see frontend issue; also fonts.display/fonts.text in theme.ts ('Poppins-Bold'/'Poppins') are exported but unused anywhere.",
+    "No deprecated Expo packages (uses expo-audio + expo-camera). testID coverage is excellent across all screens."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter9_slip.py (new)",
+    "/app/frontend/src/screens/EntryForm.tsx (one-line OCR fix: FormData instead of JSON for /vision/weight)"
+  ],
+  "success_rate": {"backend": "100% (iter9 17/17; full regression 153/153)", "frontend": "~85% — all flows verified after 1-line OCR fix; 2 HIGH issues remain (Hindi font no-op, missing vehicle correction input)"},
+  "seed_data_creation": "Seeded flagged entry INW-20261001-0321 (id 72542f63-c885-4013-bcd2-bc15270361c5, weight detail later cleared via UI correction test, vehicle detail remains) and clean entry INW-20261001-0322 (id 690bc5a0-883b-4e53-961e-ac8992fe38f9). UI-saved INW-20261001-0324 flagged (vehicle differs). Pytest iter9 creates TEST_IT9-* graded entries with uuid suffixes. Generated slip image at /tmp/test_slip.png (NET 10000 KG, vehicle MH12AB1234).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully green (153/153). EntryForm OCR fix is already applied and verified — regression: labour inward photo upload must auto-fill weight and show slip warnings. Retest focus after main-agent fixes: (1) Hindi Poppins — measure computed fontFamily of Devanagari text after toggling lang (expect 'Poppins'); note document.fonts status 'unloaded' is normal until a glyph uses the face. (2) corr-vehicle input clears vehicle-only mismatch flags via UI. Watch out: pytest.ini forces xdist -n 2 --dist loadscope — test classes must be self-contained (no cross-class state). conftest api_client session sets Content-Type: application/json — use plain requests for multipart/form posts. Quick-login buttons fill only. Entry INW-20261001-0323 (saved pre-fix) has slip photo but no OCR fields — data artifact, ignore.",
+  "rca_of_issue": "BUG 1 (fixed): Frontend POSTed JSON {slip_photo_path} with Content-Type application/json; FastAPI Form(...) params parse only multipart/urlencoded, so both optional form fields were None -> 400 'Provide file or slip_photo_path'. OCR silently skipped via toast; slip cross-check state never populated; feature unreachable in-app. Mitigation applied: multipart FormData body (apiFetch already skips JSON content-type for FormData). Repro: labour inward -> pick slip photo -> (before fix) weight never auto-fills. BUG 2 (reported): React 19 removed defaultProps for function components; react-native-web Text/TextInput are function components, so FontDefaults' Text.defaultProps.style assignment never applies -> both EN and HI render in the web default sans stack. Repro: toggle हिंदी, inspect any Devanagari element's computed fontFamily. BUG 3 (reported): correction UI never rendered a vehicle input though the backend contract supports it — incomplete form mapping in entry/[id].tsx."
+}

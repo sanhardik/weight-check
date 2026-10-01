@@ -28,6 +28,7 @@ export default function EntryDetail() {
   // Correction fields
   const [corrWeight, setCorrWeight] = useState("");
   const [corrPieces, setCorrPieces] = useState("");
+  const [corrVehicle, setCorrVehicle] = useState("");
   const [corrDriver, setCorrDriver] = useState("");
   const [corrPhone, setCorrPhone] = useState("");
   const [correcting, setCorrecting] = useState(false);
@@ -45,6 +46,7 @@ export default function EntryDetail() {
       setNote(e.office_remarks || "");
       setCorrWeight(e.actual_weight_kg != null ? String(e.actual_weight_kg) : "");
       setCorrPieces(String(e.pieces));
+      setCorrVehicle(e.vehicle_number || "");
       setCorrDriver(e.driver_name || "");
       setCorrPhone(e.driver_phone || "");
     });
@@ -80,6 +82,7 @@ export default function EntryDetail() {
       const body: any = {};
       if (corrWeight && parseFloat(corrWeight) !== entry.actual_weight_kg) body.actual_weight_kg = parseFloat(corrWeight);
       if (corrPieces && parseFloat(corrPieces) !== entry.pieces) body.pieces = parseFloat(corrPieces);
+      if (corrVehicle && corrVehicle.toUpperCase() !== entry.vehicle_number) body.vehicle_number = corrVehicle.toUpperCase();
       if (corrDriver !== (entry.driver_name || "")) body.driver_name = corrDriver || null;
       if (corrPhone !== (entry.driver_phone || "")) body.driver_phone = corrPhone || null;
       if (Object.keys(body).length === 0) { toast("Nothing to update", "warning"); return; }
@@ -143,13 +146,24 @@ export default function EntryDetail() {
           </Text>
         </View>
 
-        <View style={s.kv}><Text style={s.k}>DIMENSIONS</Text><Text style={s.v}>{entry.thickness_mm}×{entry.width_mm}×{entry.length_mm} mm</Text></View>
-        <View style={s.kv}><Text style={s.k}>PIECES</Text><Text style={s.v}>{entry.pieces}</Text></View>
-        {entry.grade ? <View style={s.kv}><Text style={s.k}>GRADE</Text><Text style={s.v}>{entry.grade}</Text></View> : null}
+        <View style={s.kv}><Text style={s.k}>DATE</Text><Text style={s.v}>{new Date(entry.entry_date || entry.created_at).toLocaleDateString()}</Text></View>
         <View style={s.kv}><Text style={s.k}>VEHICLE</Text><Text style={s.v}>{entry.vehicle_number}</Text></View>
         {entry.driver_name ? <View style={s.kv}><Text style={s.k}>DRIVER</Text><Text style={s.v}>{entry.driver_name}</Text></View> : null}
         {entry.driver_phone ? <View style={s.kv}><Text style={s.k}>DRIVER PHONE</Text><Text style={s.v}>{entry.driver_phone}</Text></View> : null}
+        {entry.mukadam_name ? <View style={s.kv}><Text style={s.k}>MUKADAM</Text><Text style={s.v}>{entry.mukadam_name}</Text></View> : null}
         {entry.broker_name ? <View style={s.kv}><Text style={s.k}>BROKER</Text><Text style={s.v}>{entry.broker_name}</Text></View> : null}
+
+        {entry.line_items && entry.line_items.length > 0 ? (
+          <View style={{ marginTop: spacing.md }}>
+            <Text style={s.secTitle}>PRODUCTS · {entry.line_items.length} LINE{entry.line_items.length > 1 ? "S" : ""}</Text>
+            {entry.line_items.map((li: any, i: number) => (
+              <View key={i} style={s.kv} testID={`detail-line-${i}`}>
+                <Text style={s.k}>#{i + 1} · {li.grade || "—"}</Text>
+                <Text style={s.v}>{li.thickness_mm}×{li.width_mm}×{li.length_mm} · {li.pieces} pcs · {Number(li.theoretical_weight_kg).toFixed(2)} kg</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         <View style={[s.kv, s.kvHl]}>
           <Text style={[s.k, { color: colors.onSurfaceInverse }]}>THEORETICAL WT</Text>
@@ -179,6 +193,25 @@ export default function EntryDetail() {
                 resizeMode="contain"
               />
             )}
+          </View>
+        ) : null}
+
+        {entry.slip_mismatch_flag ? (
+          <View style={s.mismatchBlock} testID="slip-mismatch-banner">
+            <Text style={s.mismatchTitle}>⚠ {t("slip_mismatch")}</Text>
+            {(entry.slip_mismatch_details || []).map((d: string, i: number) => (
+              <Text key={i} style={s.mismatchTxt}>• {d}</Text>
+            ))}
+            {canEdit ? (
+              <Text style={s.mismatchHint}>Correct the entry below — the flag clears automatically once it matches the slip.</Text>
+            ) : null}
+          </View>
+        ) : entry.slip_ocr_vehicle_number || entry.slip_ocr_weight_kg != null ? (
+          <View style={[s.kv, { backgroundColor: colors.surfaceTertiary }]}>
+            <Text style={s.k}>SLIP OCR · {t("slip_match_ok")} ✓</Text>
+            <Text style={s.v}>
+              {entry.slip_ocr_vehicle_number || ""}{entry.slip_ocr_vehicle_number && entry.slip_ocr_weight_kg != null ? " · " : ""}{entry.slip_ocr_weight_kg != null ? `${entry.slip_ocr_weight_kg} kg` : ""}
+            </Text>
           </View>
         ) : null}
 
@@ -225,6 +258,7 @@ export default function EntryDetail() {
             <Text style={s.correctionHint}>Every change here is logged in the audit trail below.</Text>
             <BInput testID="corr-actual-wt" label={t("actual_weight")} value={corrWeight} onChangeText={setCorrWeight} keyboardType="decimal-pad" suffix="kg" />
             <BInput testID="corr-pieces" label={t("pieces")} value={corrPieces} onChangeText={setCorrPieces} keyboardType="decimal-pad" />
+            <BInput testID="corr-vehicle" label={t("vehicle")} value={corrVehicle} onChangeText={setCorrVehicle} autoCapitalize="characters" />
             <BInput testID="corr-driver" label="DRIVER NAME" value={corrDriver} onChangeText={setCorrDriver} />
             <BInput testID="corr-driver-phone" label="DRIVER PHONE" value={corrPhone} onChangeText={setCorrPhone} keyboardType="phone-pad" />
             <BButton testID="save-correction-btn" label={correcting ? "SAVING..." : "SAVE CORRECTION"} onPress={onCorrect} loading={correcting} variant="danger" size="md" />
@@ -258,12 +292,16 @@ export default function EntryDetail() {
 const s = StyleSheet.create({
   banner: { padding: spacing.lg, borderWidth: 1.5, borderColor: colors.borderStrong, marginBottom: spacing.md },
   bannerTitle: { fontSize: 14, fontWeight: "900", letterSpacing: 2 },
-  bannerNo: { fontSize: 24, fontWeight: "900", fontFamily: "Courier", marginTop: 4 },
+  bannerNo: { fontSize: 24, fontWeight: "900", marginTop: 4 },
   kv: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, borderBottomWidth: 0, backgroundColor: colors.surface },
   kvHl: { backgroundColor: colors.surfaceInverse },
   k: { fontSize: 11, fontWeight: "900", color: colors.muted, letterSpacing: 1 },
-  v: { fontSize: 16, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier", flexShrink: 1, textAlign: "right", marginLeft: spacing.sm },
+  v: { fontSize: 16, fontWeight: "900", color: colors.onSurface, flexShrink: 1, textAlign: "right", marginLeft: spacing.sm },
   slip: { width: "100%", aspectRatio: 1.3, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
+  mismatchBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.error },
+  mismatchTitle: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.onError },
+  mismatchTxt: { fontSize: 12, fontWeight: "700", color: colors.onError, marginTop: 4 },
+  mismatchHint: { fontSize: 11, color: colors.onError, marginTop: 8, fontStyle: "italic", opacity: 0.9 },
   secTitle: { fontSize: 12, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginTop: spacing.lg, marginBottom: spacing.sm },
   officeBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.brand, backgroundColor: colors.brandTertiary },
 
@@ -274,10 +312,10 @@ const s = StyleSheet.create({
   historyRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
   historyTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   historyField: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.onSurface },
-  historyDate: { fontSize: 10, color: colors.muted, fontFamily: "Courier" },
+  historyDate: { fontSize: 10, color: colors.muted },
   historyDiff: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" },
-  historyOld: { fontSize: 12, color: colors.muted, textDecorationLine: "line-through", fontFamily: "Courier", flexShrink: 1 },
+  historyOld: { fontSize: 12, color: colors.muted, textDecorationLine: "line-through", flexShrink: 1 },
   historyArrow: { fontSize: 14, fontWeight: "900", color: colors.brand },
-  historyNew: { fontSize: 12, color: colors.onSurface, fontFamily: "Courier", fontWeight: "900", flexShrink: 1 },
+  historyNew: { fontSize: 12, color: colors.onSurface, fontWeight: "900", flexShrink: 1 },
   historyBy: { fontSize: 10, color: colors.muted, marginTop: 4, letterSpacing: 1 },
 });

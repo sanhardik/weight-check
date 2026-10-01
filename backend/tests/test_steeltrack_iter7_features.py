@@ -10,6 +10,7 @@
 import io
 import os
 import struct
+import uuid
 import math
 import time
 import pytest
@@ -260,7 +261,8 @@ class TestBrokersCRUD:
 
 # ========== Outward FIFO auto-match ==========
 class TestOutwardFIFO:
-    DIM = {"thickness_mm": 12.0, "width_mm": 1234.0, "length_mm": 3456.0, "grade": "FIFO-GRD-7"}
+    # Unique grade per run so inwards from prior runs cannot win the FIFO race
+    DIM = {"thickness_mm": 12.0, "width_mm": 1234.0, "length_mm": 3456.0, "grade": f"FIFO-GRD-{uuid.uuid4().hex[:8]}"}
 
     def _inward(self, token, pieces=3):
         body = {**self.DIM, "pieces": pieces, "vehicle_number": "FIFO-IN"}
@@ -286,7 +288,7 @@ class TestOutwardFIFO:
 
     def test_explicit_source_entry_id_preserved(self, admin_auth):
         # Grade different to avoid interference
-        dim = {"thickness_mm": 14.0, "width_mm": 999.0, "length_mm": 2222.0, "grade": "FIFO-GRD-8"}
+        dim = {"thickness_mm": 14.0, "width_mm": 999.0, "length_mm": 2222.0, "grade": f"FIFO-GRD-{uuid.uuid4().hex[:8]}"}
         a = requests.post(
             f"{BASE_URL}/api/entries/inward", headers=_h(admin_auth["token"]),
             json={**dim, "pieces": 5, "vehicle_number": "SRC-A"}, timeout=30,

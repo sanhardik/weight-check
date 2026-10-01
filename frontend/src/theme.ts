@@ -1,40 +1,40 @@
 import { useMemo } from "react";
-import { Appearance, StyleSheet, useColorScheme } from "react-native";
+import { Appearance, Platform, StyleSheet, useColorScheme } from "react-native";
 
 export type ColorScheme = "light" | "dark";
 
 const light = {
-  surface: "#FAF9F6",
-  onSurface: "#1C1B1A",
-  surfaceSecondary: "#F2EFEA",
-  onSurfaceSecondary: "#1C1B1A",
-  surfaceTertiary: "#E6E1D7",
-  onSurfaceTertiary: "#1C1B1A",
-  surfaceInverse: "#1C1B1A",
-  onSurfaceInverse: "#FAF9F6",
-  muted: "#6B6760",
+  surface: "#FFFFFF",
+  onSurface: "#17324D",
+  surfaceSecondary: "#EFF6FC",
+  onSurfaceSecondary: "#17324D",
+  surfaceTertiary: "#E9F7EF",
+  onSurfaceTertiary: "#17324D",
+  surfaceInverse: "#17324D",
+  onSurfaceInverse: "#FFFFFF",
+  muted: "#5D7A94",
 
-  brand: "#D96A3A",
+  brand: "#3E8FD0",
   onBrand: "#FFFFFF",
-  brandPrimary: "#D96A3A",
+  brandPrimary: "#3E8FD0",
   onBrandPrimary: "#FFFFFF",
-  brandSecondary: "#B9542A",
+  brandSecondary: "#2C74AE",
   onBrandSecondary: "#FFFFFF",
-  brandTertiary: "#F6DCC9",
-  onBrandTertiary: "#1C1B1A",
+  brandTertiary: "#DBEBF8",
+  onBrandTertiary: "#17324D",
 
-  success: "#4F7D4E",
+  success: "#3D9E66",
   onSuccess: "#FFFFFF",
-  warning: "#D9A33A",
-  onWarning: "#1C1B1A",
-  error: "#C44A3A",
+  warning: "#E8B54A",
+  onWarning: "#4A3808",
+  error: "#D9553F",
   onError: "#FFFFFF",
-  info: "#3A6EA5",
+  info: "#3E8FD0",
   onInfo: "#FFFFFF",
 
-  border: "#D9D4CB",
-  borderStrong: "#1C1B1A",
-  divider: "#D9D4CB",
+  border: "#D6E6F2",
+  borderStrong: "#17324D",
+  divider: "#D6E6F2",
 };
 
 export type ThemeColors = typeof light;
@@ -55,10 +55,21 @@ export const spacing = {
 };
 
 export const fonts = {
-  display: "NunitoSans-Bold" as string | undefined,
-  text: "NunitoSans" as string | undefined,
-  mono: "Menlo",
+  display: "Poppins-Bold" as string | undefined,
+  text: "Poppins" as string | undefined,
+  mono: Platform.OS === "ios" ? "Menlo" : "monospace",
 };
+
+/** English uses San Francisco (system font on Apple platforms); Hindi uses Poppins. */
+export const FONT_EN: string | undefined = Platform.select({
+  ios: "System",
+  android: "sans-serif",
+  default: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+});
+export const FONT_HI = "Poppins";
+export function appFontFamily(lang: "en" | "hi"): string | undefined {
+  return lang === "hi" ? FONT_HI : FONT_EN;
+}
 
 export function setColorScheme(scheme: ColorScheme | null) {
   Appearance.setColorScheme?.(scheme ?? "unspecified");

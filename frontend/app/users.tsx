@@ -99,6 +99,6 @@ const s = StyleSheet.create({
   roleTxtActive: { color: colors.onBrand },
   userRow: { flexDirection: "row", alignItems: "center", padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, marginBottom: spacing.sm, backgroundColor: colors.surface },
   userName: { fontSize: 16, fontWeight: "900", color: colors.onSurface },
-  userEmail: { fontSize: 11, color: colors.muted, fontFamily: "Courier", marginTop: 2 },
+  userEmail: { fontSize: 11, color: colors.muted, marginTop: 2 },
   roleBadge: { paddingHorizontal: 10, paddingVertical: 4, fontSize: 11, fontWeight: "900", letterSpacing: 1, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary, color: colors.onSurface },
 });

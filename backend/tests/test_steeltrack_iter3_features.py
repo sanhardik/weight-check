@@ -160,14 +160,16 @@ class TestParties:
         assert r_a.status_code == 200, r_a.text
         parties = r_a.json()
         assert isinstance(parties, list)
-        assert all(isinstance(p, str) for p in parties)
+        # Endpoint returns dicts {name, whatsapp, ...} since iter4
+        names = [p["name"] if isinstance(p, dict) else p for p in parties]
+        assert all(isinstance(n, str) for n in names)
         # Dedup
-        assert len(parties) == len(set(parties)), "parties contain duplicates"
+        assert len(names) == len(set(names)), "parties contain duplicates"
         # Case-insensitive sort
-        assert parties == sorted(parties, key=lambda s: s.lower()), \
+        assert names == sorted(names, key=lambda s: s.lower()), \
             "parties list not sorted case-insensitively"
         # None/empty filtered
-        assert all(p for p in parties), "empty/null party leaked"
+        assert all(n for n in names), "empty/null party leaked"
 
         # office OK too
         r_o = api_client.get(

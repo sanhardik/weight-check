@@ -24,7 +24,7 @@ import bcrypt
 import requests
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta
 
 ROOT_DIR = Path(__file__).parent
@@ -90,19 +90,37 @@ class AuthResponse(BaseModel):
     user: UserPublic
 
 
-class EntryBase(BaseModel):
+class LineItem(BaseModel):
     thickness_mm: float = Field(gt=0)
     width_mm: float = Field(gt=0)
     length_mm: float = Field(gt=0)
     pieces: float = Field(gt=0)
     grade: Optional[str] = None
+    theoretical_weight_kg: Optional[float] = None  # computed server-side
+
+    def compute_weight(self) -> float:
+        return calc_theoretical_weight(self.thickness_mm, self.width_mm, self.length_mm, self.pieces)
+
+
+class EntryBase(BaseModel):
+    # Backward-compat single-item fields (populated from line_items[0] on write)
+    thickness_mm: Optional[float] = Field(default=None, gt=0)
+    width_mm: Optional[float] = Field(default=None, gt=0)
+    length_mm: Optional[float] = Field(default=None, gt=0)
+    pieces: Optional[float] = Field(default=None, gt=0)
+    grade: Optional[str] = None
+    line_items: Optional[List[LineItem]] = None
     vehicle_number: str
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     mukadam_name: Optional[str] = None
     actual_weight_kg: Optional[float] = None
     slip_photo_path: Optional[str] = None
+    # Values read from the weighment slip by OCR — used to flag labour entry mistakes
+    slip_ocr_weight_kg: Optional[float] = None
+    slip_ocr_vehicle_number: Optional[str] = None
     remarks: Optional[str] = None
+    entry_date: Optional[datetime] = None
 
 
 class InwardCreate(EntryBase):
@@ -111,7 +129,7 @@ class InwardCreate(EntryBase):
 
 class OutwardCreate(EntryBase):
     broker_name: str
-    source_entry_id: Optional[str] = None  # Reference to inward entry stock pulled from
+    source_entry_id: Optional[str] = None
 
 class OfficeDetailsUpdate(BaseModel):
     invoice_no: Optional[str] = None
@@ -134,11 +152,12 @@ class EntryOut(BaseModel):
     id: str
     entry_number: str
     direction: Literal["inward", "outward"]
-    thickness_mm: float
-    width_mm: float
-    length_mm: float
-    pieces: float
+    thickness_mm: Optional[float] = None
+    width_mm: Optional[float] = None
+    length_mm: Optional[float] = None
+    pieces: Optional[float] = None
     grade: Optional[str] = None
+    line_items: List[LineItem] = Field(default_factory=list)
     vehicle_number: str
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
@@ -149,8 +168,13 @@ class EntryOut(BaseModel):
     variance_pct: Optional[float] = None
     variance_flagged: Optional[bool] = None
     slip_photo_path: Optional[str] = None
+    slip_ocr_weight_kg: Optional[float] = None
+    slip_ocr_vehicle_number: Optional[str] = None
+    slip_mismatch_flag: Optional[bool] = None
+    slip_mismatch_details: Optional[List[str]] = None
     remarks: Optional[str] = None
     source_entry_id: Optional[str] = None
+    entry_date: Optional[datetime] = None
     invoice_no: Optional[str] = None
     party_name: Optional[str] = None
     rate: Optional[float] = None
@@ -238,6 +262,31 @@ def calc_variance(theoretical: float, actual: Optional[float]):
     return pct, pct > WEIGHT_TOLERANCE_PCT
 
 
+def _norm_plate(s: Optional[str]) -> str:
+    """Normalise a vehicle plate for comparison — uppercase alphanumerics only."""
+    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+def compute_slip_mismatch(
+    actual_weight_kg: Optional[float],
+    vehicle_number: Optional[str],
+    ocr_weight_kg: Optional[float],
+    ocr_vehicle_number: Optional[str],
+) -> tuple:
+    """Cross-check the labour entry against what OCR read from the weighment slip.
+    Returns (flag, details). Details are human-readable reasons for office review."""
+    details: List[str] = []
+    if ocr_weight_kg is not None and actual_weight_kg is not None and float(ocr_weight_kg) > 0:
+        diff_pct = abs(float(actual_weight_kg) - float(ocr_weight_kg)) / float(ocr_weight_kg) * 100
+        if diff_pct > WEIGHT_TOLERANCE_PCT:
+            details.append(
+                f"Weight differs from slip: slip {ocr_weight_kg} kg vs entered {actual_weight_kg} kg ({round(diff_pct, 2)}%)"
+            )
+    if ocr_vehicle_number and _norm_plate(ocr_vehicle_number) != _norm_plate(vehicle_number):
+        details.append(f"Vehicle differs from slip: slip {ocr_vehicle_number} vs entered {vehicle_number}")
+    return (len(details) > 0, details)
+
+
 async def next_entry_number(direction: str) -> str:
     prefix = "INW" if direction == "inward" else "OUT"
     date_part = now_utc().strftime("%Y%m%d")
@@ -322,6 +371,36 @@ async def startup():
                 "created_at": now_utc(),
             })
             logger.info(f"Seeded user: {s['email']}")
+
+    # Migrate legacy entries (no line_items) by lifting primary fields into a
+    # single-item line_items array.
+    migrated = 0
+    async for e in db.entries.find({"line_items": {"$exists": False}}, {"_id": 0, "id": 1, "thickness_mm": 1, "width_mm": 1, "length_mm": 1, "pieces": 1, "grade": 1, "theoretical_weight_kg": 1, "created_at": 1}):
+        if not (e.get("thickness_mm") and e.get("width_mm") and e.get("length_mm") and e.get("pieces")):
+            continue
+        item = {
+            "thickness_mm": e["thickness_mm"],
+            "width_mm": e["width_mm"],
+            "length_mm": e["length_mm"],
+            "pieces": e["pieces"],
+            "grade": e.get("grade"),
+            "theoretical_weight_kg": e.get("theoretical_weight_kg") or calc_theoretical_weight(
+                e["thickness_mm"], e["width_mm"], e["length_mm"], e["pieces"]
+            ),
+        }
+        await db.entries.update_one(
+            {"id": e["id"]},
+            {"$set": {"line_items": [item], "entry_date": e.get("created_at")}},
+        )
+        migrated += 1
+    if migrated:
+        logger.info(f"Migrated {migrated} legacy entries to line_items")
+
+    # Seed catalog defaults (grades + dimensions) if empty
+    await _seed_catalog("grades", ["IS2062", "E350", "SA516", "S355", "SS400"])
+    await _seed_catalog("thicknesses", [3, 4, 5, 6, 8, 10, 12, 16, 20, 25])
+    await _seed_catalog("widths", [1000, 1250, 1500, 1800, 2000, 2500])
+    await _seed_catalog("lengths", [2000, 2500, 3000, 4000, 5000, 6000])
 
 
 @app.on_event("shutdown")
@@ -471,11 +550,17 @@ async def _check_low_stock_and_alert(thickness_mm: float, width_mm: float, lengt
     we haven't alerted in the last 24h, send an email to all admins."""
     threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
     pipeline = [
-        {"$match": {"thickness_mm": thickness_mm, "width_mm": width_mm, "length_mm": length_mm, "grade": grade}},
+        {"$unwind": "$line_items"},
+        {"$match": {
+            "line_items.thickness_mm": thickness_mm,
+            "line_items.width_mm": width_mm,
+            "line_items.length_mm": length_mm,
+            "line_items.grade": grade,
+        }},
         {"$group": {
             "_id": None,
-            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
-            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
         }},
     ]
     avail = 0.0
@@ -533,30 +618,106 @@ async def _check_low_stock_and_alert(thickness_mm: float, width_mm: float, lengt
     )
 
 
+def _normalize_line_items(body: EntryBase) -> List[dict]:
+    """Return a list of line item dicts with theoretical_weight_kg computed.
+    Accepts either an explicit body.line_items array OR legacy top-level
+    thickness/width/length/pieces/grade for backward compatibility."""
+    items: List[dict] = []
+    if body.line_items:
+        for li in body.line_items:
+            w = calc_theoretical_weight(li.thickness_mm, li.width_mm, li.length_mm, li.pieces)
+            items.append({
+                "thickness_mm": li.thickness_mm,
+                "width_mm": li.width_mm,
+                "length_mm": li.length_mm,
+                "pieces": li.pieces,
+                "grade": li.grade,
+                "theoretical_weight_kg": w,
+            })
+    elif body.thickness_mm and body.width_mm and body.length_mm and body.pieces:
+        w = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
+        items.append({
+            "thickness_mm": body.thickness_mm,
+            "width_mm": body.width_mm,
+            "length_mm": body.length_mm,
+            "pieces": body.pieces,
+            "grade": body.grade,
+            "theoretical_weight_kg": w,
+        })
+    if not items:
+        raise HTTPException(status_code=400, detail="At least one line item required")
+    return items
+
+
+async def _check_outward_stock(items: List[dict]) -> None:
+    """Guardrail: for every line item on an outward entry, verify piece availability."""
+    for li in items:
+        match = {
+            "line_items.thickness_mm": li["thickness_mm"],
+            "line_items.width_mm": li["width_mm"],
+            "line_items.length_mm": li["length_mm"],
+            "line_items.grade": li["grade"],
+        }
+        pipeline = [
+            {"$unwind": "$line_items"},
+            {"$match": {
+                "line_items.thickness_mm": li["thickness_mm"],
+                "line_items.width_mm": li["width_mm"],
+                "line_items.length_mm": li["length_mm"],
+                "line_items.grade": li["grade"],
+            }},
+            {"$group": {
+                "_id": None,
+                "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+                "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
+            }},
+        ]
+        available = 0.0
+        async for g in db.entries.aggregate(pipeline):
+            available = float(g["in"]) - float(g["out"])
+        if li["pieces"] > available + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=f"INSUFFICIENT STOCK: only {available} pcs available for {li['thickness_mm']}×{li['width_mm']}×{li['length_mm']}" + (f" ({li['grade']})" if li.get('grade') else ""),
+            )
+
+
 @api_router.post("/entries/inward", response_model=EntryOut)
 async def create_inward(body: InwardCreate, user: dict = Depends(require_role("admin", "labour", "office"))):
-    tw = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
-    vpct, flagged = calc_variance(tw, body.actual_weight_kg)
+    items = _normalize_line_items(body)
+    total_tw = round(sum(i["theoretical_weight_kg"] for i in items), 3)
+    vpct, flagged = calc_variance(total_tw, body.actual_weight_kg)
+    slip_flag, slip_details = compute_slip_mismatch(
+        body.actual_weight_kg, body.vehicle_number, body.slip_ocr_weight_kg, body.slip_ocr_vehicle_number
+    )
     entry_number = await next_entry_number("inward")
+    primary = items[0]
     doc = {
         "id": str(uuid.uuid4()),
         "entry_number": entry_number,
         "direction": "inward",
-        "thickness_mm": body.thickness_mm,
-        "width_mm": body.width_mm,
-        "length_mm": body.length_mm,
-        "pieces": body.pieces,
-        "grade": body.grade,
+        # Primary single-item fields = line_items[0] for backward compat / list previews
+        "thickness_mm": primary["thickness_mm"],
+        "width_mm": primary["width_mm"],
+        "length_mm": primary["length_mm"],
+        "pieces": sum(i["pieces"] for i in items),
+        "grade": primary["grade"],
+        "line_items": items,
         "vehicle_number": body.vehicle_number,
         "driver_name": body.driver_name,
         "driver_phone": body.driver_phone,
         "mukadam_name": body.mukadam_name,
-        "theoretical_weight_kg": tw,
+        "theoretical_weight_kg": total_tw,
         "actual_weight_kg": body.actual_weight_kg,
         "variance_pct": vpct,
         "variance_flagged": flagged,
         "slip_photo_path": body.slip_photo_path,
+        "slip_ocr_weight_kg": body.slip_ocr_weight_kg,
+        "slip_ocr_vehicle_number": body.slip_ocr_vehicle_number,
+        "slip_mismatch_flag": slip_flag,
+        "slip_mismatch_details": slip_details,
         "remarks": body.remarks,
+        "entry_date": body.entry_date or now_utc(),
         "created_by": user["id"],
         "created_at": now_utc(),
     }
@@ -568,74 +729,68 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
 
 @api_router.post("/entries/outward", response_model=EntryOut)
 async def create_outward(body: OutwardCreate, user: dict = Depends(require_role("admin", "labour", "office"))):
-    # Stock guardrail: compute available pieces for this T x W x L x grade
-    match = {
-        "thickness_mm": body.thickness_mm,
-        "width_mm": body.width_mm,
-        "length_mm": body.length_mm,
-        "grade": body.grade,
-    }
-    pipeline = [
-        {"$match": match},
-        {"$group": {
-            "_id": None,
-            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
-            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
-        }},
-    ]
-    available = 0.0
-    async for g in db.entries.aggregate(pipeline):
-        available = float(g["in"]) - float(g["out"])
-    if body.pieces > available + 1e-9:
-        raise HTTPException(
-            status_code=400,
-            detail=f"INSUFFICIENT STOCK: only {available} pcs available for {body.thickness_mm}×{body.width_mm}×{body.length_mm}" + (f" ({body.grade})" if body.grade else ""),
-        )
+    items = _normalize_line_items(body)
+    await _check_outward_stock(items)
 
-    # FIFO auto-match: if labour didn't pick a source, choose the oldest inward
-    # entry for this T × W × L × grade that still has pieces left to pull from.
+    # FIFO auto-match: pick oldest inward entry for the FIRST line item spec
+    first = items[0]
     source_entry_id = body.source_entry_id
     if not source_entry_id:
-        async for cand in db.entries.find(
-            {**match, "direction": "inward"}, {"_id": 0, "id": 1, "created_at": 1}
-        ).sort("created_at", 1):
+        async for cand in db.entries.find({
+            "direction": "inward",
+            "line_items.thickness_mm": first["thickness_mm"],
+            "line_items.width_mm": first["width_mm"],
+            "line_items.length_mm": first["length_mm"],
+            "line_items.grade": first["grade"],
+        }, {"_id": 0, "id": 1}).sort("created_at", 1):
             source_entry_id = cand["id"]
             break
 
-    tw = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
-    vpct, flagged = calc_variance(tw, body.actual_weight_kg)
+    total_tw = round(sum(i["theoretical_weight_kg"] for i in items), 3)
+    vpct, flagged = calc_variance(total_tw, body.actual_weight_kg)
+    slip_flag, slip_details = compute_slip_mismatch(
+        body.actual_weight_kg, body.vehicle_number, body.slip_ocr_weight_kg, body.slip_ocr_vehicle_number
+    )
     entry_number = await next_entry_number("outward")
+    primary = items[0]
     doc = {
         "id": str(uuid.uuid4()),
         "entry_number": entry_number,
         "direction": "outward",
-        "thickness_mm": body.thickness_mm,
-        "width_mm": body.width_mm,
-        "length_mm": body.length_mm,
-        "pieces": body.pieces,
-        "grade": body.grade,
+        "thickness_mm": primary["thickness_mm"],
+        "width_mm": primary["width_mm"],
+        "length_mm": primary["length_mm"],
+        "pieces": sum(i["pieces"] for i in items),
+        "grade": primary["grade"],
+        "line_items": items,
         "vehicle_number": body.vehicle_number,
         "driver_name": body.driver_name,
         "driver_phone": body.driver_phone,
         "mukadam_name": body.mukadam_name,
         "broker_name": body.broker_name,
         "source_entry_id": source_entry_id,
-        "theoretical_weight_kg": tw,
+        "theoretical_weight_kg": total_tw,
         "actual_weight_kg": body.actual_weight_kg,
         "variance_pct": vpct,
         "variance_flagged": flagged,
         "slip_photo_path": body.slip_photo_path,
+        "slip_ocr_weight_kg": body.slip_ocr_weight_kg,
+        "slip_ocr_vehicle_number": body.slip_ocr_vehicle_number,
+        "slip_mismatch_flag": slip_flag,
+        "slip_mismatch_details": slip_details,
         "remarks": body.remarks,
+        "entry_date": body.entry_date or now_utc(),
         "created_by": user["id"],
         "created_at": now_utc(),
     }
     await db.entries.insert_one(doc.copy())
     await _remember_vehicle(body.vehicle_number, body.driver_name, body.driver_phone)
-    # Low-stock alert (non-blocking: swallow errors so entry save never fails)
-    try:
-        await _check_low_stock_and_alert(body.thickness_mm, body.width_mm, body.length_mm, body.grade)
-    except Exception as e:
-        logger.warning(f"Low-stock alert check failed: {e}")
+    # Low-stock alerts fire per line item, non-blocking
+    for li in items:
+        try:
+            await _check_low_stock_and_alert(li["thickness_mm"], li["width_mm"], li["length_mm"], li.get("grade"))
+        except Exception as e:
+            logger.warning(f"Low-stock alert check failed: {e}")
     doc = await _enrich_entry(doc, user)
     return EntryOut(**doc)
 
@@ -773,6 +928,18 @@ async def correct_entry(
         patch["variance_pct"] = vpct
         patch["variance_flagged"] = flagged
 
+    # Re-evaluate weighment-slip mismatch after office/admin correction so the
+    # review flag clears once the entry matches the slip again.
+    if "actual_weight_kg" in patch or "vehicle_number" in patch:
+        sflag, sdet = compute_slip_mismatch(
+            patch.get("actual_weight_kg", e.get("actual_weight_kg")),
+            patch.get("vehicle_number", e.get("vehicle_number")),
+            e.get("slip_ocr_weight_kg"),
+            e.get("slip_ocr_vehicle_number"),
+        )
+        patch["slip_mismatch_flag"] = sflag
+        patch["slip_mismatch_details"] = sdet
+
     await db.entries.update_one({"id": entry_id}, {"$set": patch})
     if changes:
         await _push_history(entry_id, changes)
@@ -801,16 +968,17 @@ async def get_vehicle(plate: str, user: dict = Depends(current_user)):
 @api_router.get("/inventory", response_model=List[InventoryGroup])
 async def inventory(user: dict = Depends(current_user)):
     pipeline = [
+        {"$unwind": "$line_items"},
         {
             "$group": {
                 "_id": {
-                    "t": "$thickness_mm",
-                    "w": "$width_mm",
-                    "l": "$length_mm",
-                    "g": "$grade",
+                    "t": "$line_items.thickness_mm",
+                    "w": "$line_items.width_mm",
+                    "l": "$line_items.length_mm",
+                    "g": "$line_items.grade",
                 },
-                "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
-                "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+                "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+                "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
                 "inward_ids": {
                     "$push": {"$cond": [{"$eq": ["$direction", "inward"]}, "$id", "$$REMOVE"]}
                 },
@@ -950,10 +1118,11 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     # Low-stock groups (<= threshold, >0 available) + reorder suggestion
     threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
     stock_pipe = [
+        {"$unwind": "$line_items"},
         {"$group": {
-            "_id": {"t": "$thickness_mm", "w": "$width_mm", "l": "$length_mm", "g": "$grade"},
-            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
-            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+            "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm", "l": "$line_items.length_mm", "g": "$line_items.grade"},
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
         }},
     ]
 
@@ -961,9 +1130,10 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     consumption_cutoff = now_utc() - timedelta(days=28)
     consumption_pipe = [
         {"$match": {"direction": "outward", "created_at": {"$gte": consumption_cutoff}}},
+        {"$unwind": "$line_items"},
         {"$group": {
-            "_id": {"t": "$thickness_mm", "w": "$width_mm", "l": "$length_mm", "g": "$grade"},
-            "pcs": {"$sum": "$pieces"},
+            "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm", "l": "$line_items.length_mm", "g": "$line_items.grade"},
+            "pcs": {"$sum": "$line_items.pieces"},
         }},
     ]
     consumption_map: dict = {}
@@ -1253,13 +1423,15 @@ async def vision_weight(
                 "You are an OCR assistant for Indian steel weighment slips. "
                 "Read numbers printed on the slip. The slip shows GROSS, TARE, and NET weights in kilograms. "
                 "ALWAYS return the NET weight when present; if only one weight is shown, return that. "
-                "Respond ONLY as compact JSON: {\"weight_kg\": <number or null>, \"unit\": \"kg\", \"confidence\": <0..1>, \"raw\": \"<short text seen>\"}. "
-                "If no weight is clearly visible, use null and confidence 0."
+                "Also read the vehicle / truck registration number printed on the slip "
+                "(Indian format like MH12AB1234, may contain spaces or dashes). "
+                "Respond ONLY as compact JSON: {\"weight_kg\": <number or null>, \"vehicle_number\": <string or null>, \"unit\": \"kg\", \"confidence\": <0..1>, \"raw\": \"<short text seen>\"}. "
+                "If no weight is clearly visible, use null. If no vehicle number is clearly visible, use null."
             ),
         ).with_model("openai", "gpt-4o-mini")
 
         user_msg = UserMessage(
-            text="Extract the NET weight in kilograms from this weighment slip. Return JSON only.",
+            text="Extract the NET weight in kilograms and the vehicle registration number from this weighment slip. Return JSON only.",
             file_contents=[ImageContent(image_base64=img_b64)],
         )
 
@@ -1272,6 +1444,7 @@ async def vision_weight(
 
     # Extract JSON from response
     weight_kg: Optional[float] = None
+    vehicle_number: Optional[str] = None
     confidence: float = 0.0
     raw_text = ""
     try:
@@ -1282,6 +1455,9 @@ async def vision_weight(
             w = parsed.get("weight_kg")
             if isinstance(w, (int, float)):
                 weight_kg = float(w)
+            v = parsed.get("vehicle_number")
+            if isinstance(v, str) and v.strip():
+                vehicle_number = v.strip().upper()
             confidence = float(parsed.get("confidence", 0.0))
             raw_text = str(parsed.get("raw", ""))[:200]
     except Exception:
@@ -1301,6 +1477,7 @@ async def vision_weight(
 
     return {
         "weight_kg": weight_kg,
+        "vehicle_number": vehicle_number,
         "confidence": confidence,
         "raw": raw_text or (text_out[:160] if text_out else ""),
     }
@@ -1695,83 +1872,126 @@ async def upsert_party(name: str, body: PartyUpsert, user: dict = Depends(requir
     return doc
 
 
-# ---------- Mukadams (warehouse keepers) ----------
+# ---------- Catalog (grades + dimensions + mukadams + brokers) ----------
+_CATALOG_KINDS = ("grades", "thicknesses", "widths", "lengths", "mukadams", "brokers")
+_NUMERIC_KINDS = {"thicknesses", "widths", "lengths"}
+
+
+async def _seed_catalog(kind: str, values: list) -> None:
+    coll = db[f"catalog_{kind}"]
+    if await coll.count_documents({}) == 0:
+        for i, v in enumerate(values):
+            await coll.insert_one({"_id": str(v), "value": v, "order": i, "created_at": now_utc()})
+
+
+# Keep legacy seed helpers compatible — now backed by catalog collections.
 _DEFAULT_MUKADAMS = ["Ravi Patil", "Suresh Kadam", "Kiran Mane", "Mahesh Jadhav"]
+_DEFAULT_BROKERS = ["Shah Brothers", "Patel Trading Co.", "Metro Steel Agency", "Mehta & Sons"]
 
 
 async def _seed_mukadams():
-    if await db.mukadams.count_documents({}) == 0:
-        for i, n in enumerate(_DEFAULT_MUKADAMS):
-            await db.mukadams.insert_one({"_id": n, "name": n, "order": i, "created_at": now_utc()})
+    await _seed_catalog("mukadams", _DEFAULT_MUKADAMS)
 
 
+async def _seed_brokers():
+    await _seed_catalog("brokers", _DEFAULT_BROKERS)
+
+
+class CatalogItemIn(BaseModel):
+    value: str  # Numeric kinds parse this to float; others store as-is
+
+
+@api_router.get("/catalog/{kind}")
+async def list_catalog(kind: str, user: dict = Depends(current_user)):
+    if kind not in _CATALOG_KINDS:
+        raise HTTPException(status_code=404, detail="Unknown catalog kind")
+    if kind == "mukadams": await _seed_mukadams()
+    elif kind == "brokers": await _seed_brokers()
+    coll = db[f"catalog_{kind}"]
+    items = []
+    async for d in coll.find({}, {"_id": 0, "value": 1, "order": 1}).sort("order", 1):
+        items.append({"value": d["value"]})
+    return items
+
+
+@api_router.post("/catalog/{kind}")
+async def add_catalog(kind: str, body: CatalogItemIn, user: dict = Depends(require_role("admin", "office"))):
+    if kind not in _CATALOG_KINDS:
+        raise HTTPException(status_code=404, detail="Unknown catalog kind")
+    raw = body.value.strip() if isinstance(body.value, str) else body.value
+    if not raw:
+        raise HTTPException(status_code=400, detail="value required")
+    stored_value: Any = raw
+    if kind in _NUMERIC_KINDS:
+        try:
+            stored_value = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="value must be numeric")
+        if stored_value <= 0:
+            raise HTTPException(status_code=400, detail="value must be > 0")
+    key = str(stored_value)
+    coll = db[f"catalog_{kind}"]
+    exists = await coll.find_one({"_id": key})
+    if exists:
+        return {"value": stored_value}
+    count = await coll.count_documents({})
+    await coll.insert_one({"_id": key, "value": stored_value, "order": count, "created_at": now_utc()})
+    return {"value": stored_value}
+
+
+@api_router.delete("/catalog/{kind}/{value}")
+async def remove_catalog(kind: str, value: str, admin: dict = Depends(require_role("admin"))):
+    if kind not in _CATALOG_KINDS:
+        raise HTTPException(status_code=404, detail="Unknown catalog kind")
+    key = value
+    if kind in _NUMERIC_KINDS:
+        try:
+            key = str(float(value))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="value must be numeric")
+    coll = db[f"catalog_{kind}"]
+    await coll.delete_one({"_id": key})
+    return {"ok": True}
+
+
+# Legacy helper endpoints kept as thin shims so older clients still work.
 class NamedListItem(BaseModel):
     name: str
 
 
 @api_router.get("/mukadams")
 async def list_mukadams(user: dict = Depends(current_user)):
-    await _seed_mukadams()
-    items = []
-    async for m in db.mukadams.find({}, {"_id": 0, "name": 1, "order": 1}).sort("order", 1):
-        items.append({"name": m["name"]})
-    return items
+    items = await list_catalog("mukadams", user)
+    return [{"name": i["value"]} for i in items]
 
 
 @api_router.post("/mukadams")
 async def add_mukadam(body: NamedListItem, admin: dict = Depends(require_role("admin"))):
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name required")
-    exists = await db.mukadams.find_one({"_id": name})
-    if exists:
-        return {"name": name}
-    count = await db.mukadams.count_documents({})
-    await db.mukadams.insert_one({"_id": name, "name": name, "order": count, "created_at": now_utc()})
-    return {"name": name}
+    await add_catalog("mukadams", CatalogItemIn(value=body.name), admin)
+    return {"name": body.name.strip()}
 
 
 @api_router.delete("/mukadams/{name}")
 async def remove_mukadam(name: str, admin: dict = Depends(require_role("admin"))):
-    await db.mukadams.delete_one({"_id": name})
+    await remove_catalog("mukadams", name, admin)
     return {"ok": True}
-
-
-# ---------- Brokers ----------
-_DEFAULT_BROKERS = ["Shah Brothers", "Patel Trading Co.", "Metro Steel Agency", "Mehta & Sons"]
-
-
-async def _seed_brokers():
-    if await db.brokers.count_documents({}) == 0:
-        for i, n in enumerate(_DEFAULT_BROKERS):
-            await db.brokers.insert_one({"_id": n, "name": n, "order": i, "created_at": now_utc()})
 
 
 @api_router.get("/brokers")
 async def list_brokers(user: dict = Depends(current_user)):
-    await _seed_brokers()
-    items = []
-    async for b in db.brokers.find({}, {"_id": 0, "name": 1, "order": 1}).sort("order", 1):
-        items.append({"name": b["name"]})
-    return items
+    items = await list_catalog("brokers", user)
+    return [{"name": i["value"]} for i in items]
 
 
 @api_router.post("/brokers")
 async def add_broker(body: NamedListItem, admin: dict = Depends(require_role("admin"))):
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name required")
-    exists = await db.brokers.find_one({"_id": name})
-    if exists:
-        return {"name": name}
-    count = await db.brokers.count_documents({})
-    await db.brokers.insert_one({"_id": name, "name": name, "order": count, "created_at": now_utc()})
-    return {"name": name}
+    await add_catalog("brokers", CatalogItemIn(value=body.name), admin)
+    return {"name": body.name.strip()}
 
 
 @api_router.delete("/brokers/{name}")
 async def remove_broker(name: str, admin: dict = Depends(require_role("admin"))):
-    await db.brokers.delete_one({"_id": name})
+    await remove_catalog("brokers", name, admin)
     return {"ok": True}
 
 
