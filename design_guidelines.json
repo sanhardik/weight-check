@@ -1,0 +1,153 @@
+{
+  "app_name": "SteelTrack",
+  "personality": "5 Brutalist Mobile",
+  "personality_one_liner": "A high-visibility, industrial-grade brutalist interface built for gloved hands and harsh warehouse lighting, prioritizing absolute legibility over subtlety.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#111111",
+    "surfaceSecondary": "#F4F4F5",
+    "onSurfaceSecondary": "#111111",
+    "surfaceTertiary": "#E4E4E7",
+    "onSurfaceTertiary": "#111111",
+    "surfaceInverse": "#111111",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#FF4500",
+    "onBrand": "#FFFFFF",
+    "brandPrimary": "#FF4500",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E63E00",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FFDACC",
+    "onBrandTertiary": "#111111",
+    "success": "#008A00",
+    "onSuccess": "#FFFFFF",
+    "warning": "#FFB300",
+    "onWarning": "#111111",
+    "error": "#E50000",
+    "onError": "#FFFFFF",
+    "border": "#E4E4E7",
+    "borderStrong": "#111111",
+    "divider": "#E4E4E7",
+    "muted": "#52525B"
+  },
+  "typography": {
+    "displayFontFamily": "SpaceGrotesk-Regular",
+    "textFontFamily": "JetBrainsMono-Regular",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use rigid grids, hard alignment, and exposed structure. Huge tap targets for labour use.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 0,
+    "md": 0,
+    "lg": 0,
+    "pill": 0
+  },
+  "shadow_tier": "0",
+  "navigation": "stack_only",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": false,
+    "do's": [],
+    "dont's": [
+      "No glass, no blur, no gradients. Strict brutalist solid surfaces for industrial contrast."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Login",
+      "purpose": "Role selection and authentication with extremely large touch targets.",
+      "states": {
+        "loading": "Solid monochrome spinner, black on white.",
+        "empty": "N/A",
+        "error": "Full-width red banner with sharp black borders."
+      },
+      "layout": "Vertical stack of massive role buttons (Admin, Office, Labour). Hard black borders (1.5pt) around all inputs and buttons. No soft styling."
+    },
+    {
+      "name": "WarehouseHome",
+      "purpose": "Labourer dashboard to select Inward or Outward flows.",
+      "states": {
+        "loading": "Skeleton loader with sharp rectangular blocks.",
+        "empty": "N/A",
+        "error": "Error toast with solid #E50000 background."
+      },
+      "layout": "Bento-style or full-width huge cards for INWARD (आवक) and OUTWARD (जावक). Dual-language labels on everything, where Hindi is prominent. 64pt minimum height for main CTAs."
+    },
+    {
+      "name": "InwardEntry",
+      "purpose": "Step-by-step data collection for incoming steel plates.",
+      "states": {
+        "loading": "Spinner centered.",
+        "empty": "N/A",
+        "error": "Inline error messages in bold #E50000."
+      },
+      "layout": "Progressive disclosure layout. Instead of one long scrollable form, break it into vertical chunks (Dimensions -> Quantity & Vehicle -> Slip Photo). Large numerical keypad for inputs instead of default system keyboard if possible, or extremely large input fields. Theoretical weight calculation shown in a prominent high-contrast box (black bg, white text)."
+    },
+    {
+      "name": "OutwardEntry",
+      "purpose": "Select stock and log outgoing material.",
+      "states": {
+        "loading": "Spinner centered.",
+        "empty": "No stock available message.",
+        "error": "Variance >0.2% flag shown in massive warning yellow banner."
+      },
+      "layout": "Stock selection grid using tabular data rows (Thickness x Width x Length). Followed by Broker/Vehicle inputs. Heavy use of mono font for tabular data to ensure alignment."
+    },
+    {
+      "name": "InventoryPosition",
+      "purpose": "Real-time stock view for Admin/Office.",
+      "states": {
+        "loading": "Skeleton table rows.",
+        "empty": "Text: No inventory found.",
+        "error": "Failed to load inventory."
+      },
+      "layout": "Dense data table. Mono font for all numbers. Strong horizontal black dividers. Grouped strictly by T x W x L. Search/Filter bar pinned at the top."
+    }
+  ],
+  "images": {
+    "hero_warehouse": {
+      "url": "https://images.unsplash.com/photo-1697698532634-ea59b636ccea?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwxfHxzdGVlbCUyMHNoZWV0cyUyMHdhcmVob3VzZXxlbnwwfHx8fDE3OTA4NjI5ODV8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Rolls of steel lined up in a warehouse"
+    },
+    "hero_plates": {
+      "url": "https://images.unsplash.com/photo-1724488038316-b67861d88aec?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwxfHxzdGFja2VkJTIwaGVhdnklMjBzdGVlbCUyMHBsYXRlc3xlbnwwfHx8fDE3OTA1ODQzNjh8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "A pile of metal boxes stacked on top of each other"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Prioritize extremely simple UI with large touch targets (64pt minimum for primary buttons) designed for gloved hands.",
+    "Implement Bilingual Labels (English / Hindi) prominently on the Warehouse Home and Entry screens to support labourer accessibility.",
+    "Use 1.5pt hard black borders (`borderStrong`) on all inputs, buttons, and cards. No border radius (0px) everywhere. Follow Brutalist principles.",
+    "Do not use glassmorphism, blur, or soft shadows. The warehouse environment requires absolute contrast and zero visual noise.",
+    "Break forms into step-by-step wizards rather than long scrolling screens. E.g., Size -> Quantity -> Vehicle -> Slip.",
+    "Ensure the >0.2% weight variance flag is visually aggressive (e.g., using the warning/error colors prominently).",
+    "Always use the JetBrainsMono font for numeric inputs and tabular inventory data to ensure perfect vertical alignment."
+  ]
+}
