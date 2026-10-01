@@ -51,8 +51,8 @@ export default function LoginScreen() {
         <View style={styles.topRow}>
           <View style={styles.brandBlock}>
             <Text style={styles.brandLine} />
-            <Text style={styles.brandTitle}>STEEL</Text>
-            <Text style={styles.brandTitleAccent}>TRACK</Text>
+            <Text style={styles.brandTitle}>HEMANT</Text>
+            <Text style={styles.brandTitleAccent}>ENTERPRISE</Text>
           </View>
           <Pressable
             testID="lang-toggle"
@@ -120,8 +120,8 @@ const styles = StyleSheet.create({
   topRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" },
   brandBlock: { marginTop: spacing.lg },
   brandLine: { width: 80, height: 6, backgroundColor: colors.brand, marginBottom: spacing.sm },
-  brandTitle: { fontSize: 42, fontWeight: "900", color: colors.onSurface, letterSpacing: -1 },
-  brandTitleAccent: { fontSize: 42, fontWeight: "900", color: colors.brand, letterSpacing: -1, marginTop: -8 },
+  brandTitle: { fontSize: 42, fontWeight: "800", color: colors.onSurface, letterSpacing: -1 },
+  brandTitleAccent: { fontSize: 32, fontWeight: "800", color: colors.brand, letterSpacing: 0, marginTop: -4 },
   langBtn: { marginTop: spacing.lg, paddingVertical: 8, paddingHorizontal: 12, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceInverse },
   langTxt: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 14 },
   subtitle: { marginTop: spacing.xl, fontSize: 14, fontWeight: "900", letterSpacing: 2, color: colors.muted },

@@ -1,7 +1,7 @@
-# SteelTrack — Steel Sheet & Plate Inventory App
+# Hemant Enterprise — Steel Sheet & Plate Inventory App
 
 ## Overview
-Mobile app (iOS/Android/Web) for a steel sheets & plates trading business. Warehouse workers log inward/outward material entries; office staff enriches entries with invoice/party details. Real-time inventory, theoretical weight calculation, and weight-slip variance flagging.
+Mobile app (iOS/Android/Web) for a steel sheets & plates trading business. Warehouse keepers (मुकादम) log inward/outward material entries; office staff enriches entries with invoice/party details. Real-time inventory, theoretical weight calculation, and weight-slip variance flagging (±0.35%).
 
 ## Problem Statement
 Simple, bilingual (English/Hindi) inventory system usable by labourers with basic literacy. Steel comes in/out as sheets with Thickness×Width×Length×Pieces (supports 0.5 pieces). App calculates theoretical weight from dimensions and compares with actual weighment-slip reading; flags >0.2% mismatch. Role-based device access.
@@ -55,6 +55,17 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
+
+## Iteration 6 — Hemant Enterprise rebrand + bug fix (shipped)
+- **App renamed to Hemant Enterprise** (login brand, app.json name, email from_name)
+- **Variance threshold 0.2% → 0.35%** (backend constant + all i18n labels + frontend inline check)
+- **Mukadam (warehouse keeper) tile + picker** — pre-seeded Ravi Patil / Suresh Kadam / Kiran Mane / Mahesh Jadhav; selected name saved to AsyncStorage and auto-attached to every inward/outward entry; admin CRUD at `/api/mukadams`
+- **Broker dropdown** — 4 pre-seeded brokers (`/api/brokers`), labour picks from a dropdown instead of typing
+- **Outward is now one single form for labour** — fill dimensions and pieces, backend FIFO-picks the oldest matching inward entry as the source lot automatically
+- **Voice bug fix** — dual-model fallback (gpt-4o-mini-transcribe → whisper-1), 422 "No audible speech detected" instead of silent 502, descriptive 502 detail if the SDK itself fails; works on web via MediaRecorder as well as native via expo-audio
+- **Soothed palette & typography** — warm cream background (`#FAF9F6`), softer orange (`#D96A3A`), Nunito Sans font loaded via expo-font, reduced heavy 900 weights to 700/800
+
+22/22 iter_7 tests pass; voice bug confirmed resolved by testing agent.
 
 ## Iteration 5 — Alerts, WhatsApp Memory, Invoice PDFs, Variance Trail, Vehicle Memory (shipped)
 - Entry form: optional **Driver Name** + **Driver Phone**; typing a known vehicle plate shows a green "↩ Last: Suresh · 99999..." hint and auto-fills driver fields from `db.vehicles`

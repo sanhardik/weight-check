@@ -38,6 +38,7 @@ export default function Home() {
 
   const tiles: Tile[] = [];
   if (user.role === "labour" || user.role === "admin") {
+    tiles.push({ testID: "tile-mukadam", en: "WAREHOUSE KEEPER", hi: "मुकादम", href: "/mukadam", bg: colors.brandTertiary, fg: colors.onSurface, sub: "SELECT YOUR NAME" });
     tiles.push({ testID: "tile-inward", en: "INWARD", hi: "आवक", href: "/inward", bg: colors.brand, fg: colors.onBrand, sub: "+ ADD MATERIAL" });
     tiles.push({ testID: "tile-outward", en: "OUTWARD", hi: "जावक", href: "/outward", bg: colors.surfaceInverse, fg: colors.onSurfaceInverse, sub: "- SEND MATERIAL" });
   }

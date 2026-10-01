@@ -31,8 +31,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 STEEL_DENSITY_KG_PER_MM3 = 7.85e-6  # 7850 kg/m^3
-WEIGHT_TOLERANCE_PCT = 0.2
-APP_NAME = "steeltrack"
+WEIGHT_TOLERANCE_PCT = 0.35
+APP_NAME = "hemant"
+APP_DISPLAY_NAME = "Hemant Enterprise"
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
@@ -42,7 +43,7 @@ JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "SteelTrack")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", APP_DISPLAY_NAME)
 LOW_STOCK_DEFAULT_PCS = float(os.environ.get("LOW_STOCK_DEFAULT_PCS", "2"))
 
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
@@ -98,6 +99,7 @@ class EntryBase(BaseModel):
     vehicle_number: str
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
+    mukadam_name: Optional[str] = None
     actual_weight_kg: Optional[float] = None
     slip_photo_path: Optional[str] = None
     remarks: Optional[str] = None
@@ -110,7 +112,6 @@ class InwardCreate(EntryBase):
 class OutwardCreate(EntryBase):
     broker_name: str
     source_entry_id: Optional[str] = None  # Reference to inward entry stock pulled from
-
 
 class OfficeDetailsUpdate(BaseModel):
     invoice_no: Optional[str] = None
@@ -141,6 +142,7 @@ class EntryOut(BaseModel):
     vehicle_number: str
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
+    mukadam_name: Optional[str] = None
     broker_name: Optional[str] = None
     theoretical_weight_kg: float
     actual_weight_kg: Optional[float] = None
@@ -548,6 +550,7 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
         "vehicle_number": body.vehicle_number,
         "driver_name": body.driver_name,
         "driver_phone": body.driver_phone,
+        "mukadam_name": body.mukadam_name,
         "theoretical_weight_kg": tw,
         "actual_weight_kg": body.actual_weight_kg,
         "variance_pct": vpct,
@@ -589,6 +592,16 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
             detail=f"INSUFFICIENT STOCK: only {available} pcs available for {body.thickness_mm}×{body.width_mm}×{body.length_mm}" + (f" ({body.grade})" if body.grade else ""),
         )
 
+    # FIFO auto-match: if labour didn't pick a source, choose the oldest inward
+    # entry for this T × W × L × grade that still has pieces left to pull from.
+    source_entry_id = body.source_entry_id
+    if not source_entry_id:
+        async for cand in db.entries.find(
+            {**match, "direction": "inward"}, {"_id": 0, "id": 1, "created_at": 1}
+        ).sort("created_at", 1):
+            source_entry_id = cand["id"]
+            break
+
     tw = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
     vpct, flagged = calc_variance(tw, body.actual_weight_kg)
     entry_number = await next_entry_number("outward")
@@ -604,8 +617,9 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
         "vehicle_number": body.vehicle_number,
         "driver_name": body.driver_name,
         "driver_phone": body.driver_phone,
+        "mukadam_name": body.mukadam_name,
         "broker_name": body.broker_name,
-        "source_entry_id": body.source_entry_id,
+        "source_entry_id": source_entry_id,
         "theoretical_weight_kg": tw,
         "actual_weight_kg": body.actual_weight_kg,
         "variance_pct": vpct,
@@ -1132,9 +1146,10 @@ def _extract_numbers(text: str) -> list:
 
 @api_router.post("/voice/transcribe")
 async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(current_user)):
-    """Accept short audio, transcribe via Emergent-managed OpenAI STT
-    (gpt-4o-mini-transcribe), and extract up to 3 numbers in reading order
-    for Thickness / Width / Length."""
+    """Accept short audio, transcribe via Emergent-managed OpenAI STT, and extract
+    up to 3 numbers in reading order for Thickness / Width / Length. Tries
+    gpt-4o-mini-transcribe first; falls back to whisper-1 on any failure (older
+    model is more tolerant of unusual audio containers from Expo recorder)."""
     data = await file.read()
     if len(data) < 1024:
         raise HTTPException(status_code=400, detail="Audio too short")
@@ -1143,10 +1158,11 @@ async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(cu
 
     name = file.filename or "audio.m4a"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else "m4a"
-    if ext not in {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"}:
+    if ext not in {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "flac"}:
         ext = "m4a"
 
     text = ""
+    last_err: Optional[str] = None
     try:
         from emergentintegrations.llm.openai import OpenAISpeechToText
         stt = OpenAISpeechToText(api_key=EMERGENT_KEY)
@@ -1154,23 +1170,35 @@ async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(cu
             tmp.write(data)
             tmp_path = tmp.name
         try:
-            with open(tmp_path, "rb") as fh:
-                resp = await stt.transcribe(
-                    file=fh,
-                    model="gpt-4o-mini-transcribe",
-                    response_format="json",
-                    temperature=0.0,
-                    prompt="Steel plate dimensions in millimeters: thickness, width, length. मोटाई, चौड़ाई, लम्बाई मिलीमीटर में।",
-                )
-            text = (getattr(resp, "text", "") or "").strip()
+            for model_name in ("gpt-4o-mini-transcribe", "whisper-1"):
+                try:
+                    with open(tmp_path, "rb") as fh:
+                        resp = await stt.transcribe(
+                            file=fh,
+                            model=model_name,
+                            response_format="json",
+                            temperature=0.0,
+                        )
+                    text = (getattr(resp, "text", "") or "").strip()
+                    if text:
+                        logger.info(f"Voice OK via {model_name}: {text[:80]}")
+                        break
+                except Exception as me:
+                    last_err = f"{model_name}: {me}"
+                    logger.warning(f"Voice model {model_name} failed: {me}")
+                    continue
         finally:
             try:
                 os.unlink(tmp_path)
             except Exception:
                 pass
     except Exception as e:
-        logger.error(f"Voice transcription failed: {e}")
+        logger.error(f"Voice transcription failed hard: {e}")
         raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
+
+    if not text:
+        detail = f"No audible numbers detected. {last_err}" if last_err else "No audible speech detected"
+        raise HTTPException(status_code=422, detail=detail)
 
     numbers = _extract_numbers(text)
     return {
@@ -1665,6 +1693,86 @@ async def upsert_party(name: str, body: PartyUpsert, user: dict = Depends(requir
     }
     await db.parties.update_one({"name": doc["name"]}, {"$set": doc}, upsert=True)
     return doc
+
+
+# ---------- Mukadams (warehouse keepers) ----------
+_DEFAULT_MUKADAMS = ["Ravi Patil", "Suresh Kadam", "Kiran Mane", "Mahesh Jadhav"]
+
+
+async def _seed_mukadams():
+    if await db.mukadams.count_documents({}) == 0:
+        for i, n in enumerate(_DEFAULT_MUKADAMS):
+            await db.mukadams.insert_one({"_id": n, "name": n, "order": i, "created_at": now_utc()})
+
+
+class NamedListItem(BaseModel):
+    name: str
+
+
+@api_router.get("/mukadams")
+async def list_mukadams(user: dict = Depends(current_user)):
+    await _seed_mukadams()
+    items = []
+    async for m in db.mukadams.find({}, {"_id": 0, "name": 1, "order": 1}).sort("order", 1):
+        items.append({"name": m["name"]})
+    return items
+
+
+@api_router.post("/mukadams")
+async def add_mukadam(body: NamedListItem, admin: dict = Depends(require_role("admin"))):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    exists = await db.mukadams.find_one({"_id": name})
+    if exists:
+        return {"name": name}
+    count = await db.mukadams.count_documents({})
+    await db.mukadams.insert_one({"_id": name, "name": name, "order": count, "created_at": now_utc()})
+    return {"name": name}
+
+
+@api_router.delete("/mukadams/{name}")
+async def remove_mukadam(name: str, admin: dict = Depends(require_role("admin"))):
+    await db.mukadams.delete_one({"_id": name})
+    return {"ok": True}
+
+
+# ---------- Brokers ----------
+_DEFAULT_BROKERS = ["Shah Brothers", "Patel Trading Co.", "Metro Steel Agency", "Mehta & Sons"]
+
+
+async def _seed_brokers():
+    if await db.brokers.count_documents({}) == 0:
+        for i, n in enumerate(_DEFAULT_BROKERS):
+            await db.brokers.insert_one({"_id": n, "name": n, "order": i, "created_at": now_utc()})
+
+
+@api_router.get("/brokers")
+async def list_brokers(user: dict = Depends(current_user)):
+    await _seed_brokers()
+    items = []
+    async for b in db.brokers.find({}, {"_id": 0, "name": 1, "order": 1}).sort("order", 1):
+        items.append({"name": b["name"]})
+    return items
+
+
+@api_router.post("/brokers")
+async def add_broker(body: NamedListItem, admin: dict = Depends(require_role("admin"))):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    exists = await db.brokers.find_one({"_id": name})
+    if exists:
+        return {"name": name}
+    count = await db.brokers.count_documents({})
+    await db.brokers.insert_one({"_id": name, "name": name, "order": count, "created_at": now_utc()})
+    return {"name": name}
+
+
+@api_router.delete("/brokers/{name}")
+async def remove_broker(name: str, admin: dict = Depends(require_role("admin"))):
+    await db.brokers.delete_one({"_id": name})
+    return {"ok": True}
 
 
 # ---------- Invoice PDF per entry ----------

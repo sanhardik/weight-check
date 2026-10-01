@@ -4,37 +4,37 @@ import { Appearance, StyleSheet, useColorScheme } from "react-native";
 export type ColorScheme = "light" | "dark";
 
 const light = {
-  surface: "#FFFFFF",
-  onSurface: "#111111",
-  surfaceSecondary: "#F4F4F5",
-  onSurfaceSecondary: "#111111",
-  surfaceTertiary: "#E4E4E7",
-  onSurfaceTertiary: "#111111",
-  surfaceInverse: "#111111",
-  onSurfaceInverse: "#FFFFFF",
-  muted: "#52525B",
+  surface: "#FAF9F6",
+  onSurface: "#1C1B1A",
+  surfaceSecondary: "#F2EFEA",
+  onSurfaceSecondary: "#1C1B1A",
+  surfaceTertiary: "#E6E1D7",
+  onSurfaceTertiary: "#1C1B1A",
+  surfaceInverse: "#1C1B1A",
+  onSurfaceInverse: "#FAF9F6",
+  muted: "#6B6760",
 
-  brand: "#FF4500",
+  brand: "#D96A3A",
   onBrand: "#FFFFFF",
-  brandPrimary: "#FF4500",
+  brandPrimary: "#D96A3A",
   onBrandPrimary: "#FFFFFF",
-  brandSecondary: "#E63E00",
+  brandSecondary: "#B9542A",
   onBrandSecondary: "#FFFFFF",
-  brandTertiary: "#FFDACC",
-  onBrandTertiary: "#111111",
+  brandTertiary: "#F6DCC9",
+  onBrandTertiary: "#1C1B1A",
 
-  success: "#008A00",
+  success: "#4F7D4E",
   onSuccess: "#FFFFFF",
-  warning: "#FFB300",
-  onWarning: "#111111",
-  error: "#E50000",
+  warning: "#D9A33A",
+  onWarning: "#1C1B1A",
+  error: "#C44A3A",
   onError: "#FFFFFF",
-  info: "#1D4ED8",
+  info: "#3A6EA5",
   onInfo: "#FFFFFF",
 
-  border: "#E4E4E7",
-  borderStrong: "#111111",
-  divider: "#E4E4E7",
+  border: "#D9D4CB",
+  borderStrong: "#1C1B1A",
+  divider: "#D9D4CB",
 };
 
 export type ThemeColors = typeof light;
@@ -55,8 +55,9 @@ export const spacing = {
 };
 
 export const fonts = {
-  display: undefined as string | undefined, // SpaceGrotesk if loaded
-  mono: "Courier",
+  display: "NunitoSans-Bold" as string | undefined,
+  text: "NunitoSans" as string | undefined,
+  mono: "Menlo",
 };
 
 export function setColorScheme(scheme: ColorScheme | null) {

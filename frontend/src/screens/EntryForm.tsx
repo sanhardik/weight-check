@@ -1,7 +1,6 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, Image, Pressable, ActivityIndicator } from "react-native";
-import { router, Redirect, useLocalSearchParams } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { router, Redirect, useLocalSearchParams } from "expo-router";import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { useAuth, apiFetch, fileUrl } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
@@ -12,6 +11,8 @@ import { BButton } from "@/src/ui/BButton";
 import { toast } from "@/src/ui/Toast";
 import { VoiceInput } from "@/src/ui/VoiceInput";
 import { QRScanner } from "@/src/ui/QRScanner";
+import { Dropdown } from "@/src/ui/Dropdown";
+import { getMukadam } from "@/src/mukadam";
 
 type Props = { direction: "inward" | "outward"; prefill?: any };
 
@@ -30,6 +31,8 @@ export function EntryForm({ direction, prefill }: Props) {
   const [driverPhone, setDriverPhone] = useState("");
   const [vehicleHint, setVehicleHint] = useState<string | null>(null);
   const [broker, setBroker] = useState("");
+  const [brokers, setBrokers] = useState<string[]>([]);
+  const [mukadam, setMukadamName] = useState<string | null>(null);
   const [actualWeight, setActualWeight] = useState("");
   const [remarks, setRemarks] = useState("");
 
@@ -46,7 +49,14 @@ export function EntryForm({ direction, prefill }: Props) {
   const varianceRaw = actualWeight && theoretical > 0
     ? Math.abs(parseFloat(actualWeight) - theoretical) / theoretical * 100
     : null;
-  const flagged = varianceRaw !== null && varianceRaw > 0.2;
+  const flagged = varianceRaw !== null && varianceRaw > 0.35;
+
+  useEffect(() => {
+    getMukadam().then(setMukadamName);
+    if (direction === "outward") {
+      apiFetch("/brokers", {}, token).then((d) => setBrokers((d || []).map((b: any) => b.name))).catch(() => setBrokers([]));
+    }
+  }, [direction, token]);
 
   const lookupVehicle = useCallback(async (plate: string) => {
     const trimmed = (plate || "").trim().toUpperCase();
@@ -144,6 +154,7 @@ export function EntryForm({ direction, prefill }: Props) {
         vehicle_number: vehicle.toUpperCase(),
         driver_name: driverName || null,
         driver_phone: driverPhone || null,
+        mukadam_name: mukadam || null,
         actual_weight_kg: actualWeight ? parseFloat(actualWeight) : null,
         slip_photo_path: photoPath,
         remarks: remarks || null,
@@ -173,6 +184,21 @@ export function EntryForm({ direction, prefill }: Props) {
           <Text style={s.langHi}>{titleHi}</Text>
           <Text style={s.langEn}>{titleEn}</Text>
         </View>
+
+        {mukadam ? (
+          <View style={s.mukadamBadge}>
+            <Text style={s.mukadamLbl}>मुकादम · WAREHOUSE KEEPER</Text>
+            <Text style={s.mukadamName}>{mukadam}</Text>
+          </View>
+        ) : (
+          <Pressable
+            testID="mukadam-missing-cta"
+            onPress={() => router.push("/mukadam")}
+            style={s.mukadamMissing}
+          >
+            <Text style={s.mukadamMissingTxt}>⚠ SELECT WAREHOUSE KEEPER FIRST →</Text>
+          </Pressable>
+        )}
 
         <Text style={s.section}>1. DIMENSIONS / आकार</Text>
         <VoiceInput
@@ -228,7 +254,14 @@ export function EntryForm({ direction, prefill }: Props) {
           }}
         />
         {direction === "outward" && (
-          <BInput testID="input-broker" label={t("broker")} value={broker} onChangeText={setBroker} />
+          <Dropdown
+            testID="broker-dropdown"
+            label={t("broker")}
+            value={broker || null}
+            options={brokers}
+            onChange={setBroker}
+            placeholder="SELECT BROKER · ब्रोकर चुनें"
+          />
         )}
 
         <Text style={s.section}>3. WEIGHT / वजन</Text>
@@ -337,4 +370,9 @@ const s = StyleSheet.create({
   qrIcon: { color: colors.onSurfaceInverse, fontSize: 22, fontWeight: "900" },
   qrLbl: { color: colors.onSurfaceInverse, fontSize: 10, fontWeight: "900", letterSpacing: 2 },
   vehicleHint: { fontSize: 11, fontWeight: "900", color: colors.success, letterSpacing: 0.5, marginBottom: spacing.sm, marginTop: -spacing.sm },
+  mukadamBadge: { padding: spacing.sm, backgroundColor: colors.brandTertiary, borderWidth: 1.5, borderColor: colors.borderStrong, marginBottom: spacing.md },
+  mukadamLbl: { fontSize: 10, fontWeight: "800", letterSpacing: 2, color: colors.muted },
+  mukadamName: { fontSize: 18, fontWeight: "800", color: colors.onSurface, marginTop: 2 },
+  mukadamMissing: { padding: spacing.md, backgroundColor: colors.warning, borderWidth: 1.5, borderColor: colors.borderStrong, marginBottom: spacing.md },
+  mukadamMissingTxt: { color: colors.onWarning, fontWeight: "800", letterSpacing: 1, fontSize: 13, textAlign: "center" },
 });
