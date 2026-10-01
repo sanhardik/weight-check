@@ -1,0 +1,43 @@
+{
+  "summary": "Backend-only testing for SteelTrack iteration 2 (4 new features). Created /app/backend/tests/test_steeltrack_new_features.py with 16 new tests covering: (1) GET /api/analytics/summary — shape (daily=7 YYYY-MM-DD buckets, totals_today/window, pending_office, total_entries, top_parties, top_brokers), accessible to all 3 roles, and reflects a new inward entry (pcs delta>=2, kg delta≈157); (2) GET /api/entries.csv — admin 200 with Content-Type text/csv + attachment Content-Disposition, 21 headers starting with 'Entry No.,Direction,Date,...', each row 21 fields, direction=inward filter returns only INWARD rows, office OK, labour 403, and ?token= query param auth works without Authorization header; (3) Stock guardrail — pieces>available returns 400 with 'INSUFFICIENT STOCK', boundary case pieces=available drains to 0, grade is isolated (grade A inward does not satisfy grade B outward); (4) POST /api/voice/transcribe — missing file returns 422, <1024-byte audio returns 400 'Audio too short' (actual transcription not tested, as required). Also ran the 25 pre-existing tests as regression — all passed. Final: 41/41 passed on public URL from EXPO_PUBLIC_BACKEND_URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/analytics/summary", "issue": "No RBAC: visible to any logged-in user (labour included). Review request explicitly accepts this — reporting for awareness only."},
+      {"endpoint": "GET /api/entries.csv?token=...", "issue": "JWT is passed in a query string; appears in server access logs and browser history. Acceptable for native app download but worth noting as a mild security consideration."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_new_features.py",
+    "/app/backend/tests/test_steeltrack_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results_iter2.xml",
+    "/app/test_reports/pytest/pytest_results_iter2_full.xml"
+  ],
+  "action_items": [
+    "No fixes required — all 4 new features and 13 feature points pass as specified.",
+    "(Optional, carried from iteration_1) server.py is 906 lines — consider splitting into routers (auth, entries, inventory, analytics, voice, upload)."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from ~580 to 906 lines after this iteration — crossing the 700-line split threshold. Splitting into focused routers is recommended before next feature iteration.",
+    "/api/voice/transcribe reads full upload before size validation; for 25MB uploads this holds memory until the size check. Minor; acceptable with current limits.",
+    "Stock guardrail aggregation groups by exact (thickness, width, length, grade) tuple with grade match on null — correct, verified by grade_isolation test.",
+    "CSV export streams a single-string generator (iter([buf.getvalue()])) — not truly streaming but fine for current entry volumes.",
+    "Analytics daily list is correctly zero-filled to exactly `days` buckets (verified)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_new_features.py (created)"
+  ],
+  "success_rate": {"backend": "100% (16/16 new; 41/41 overall)", "frontend": "N/A (not requested)"},
+  "seed_data_creation": "Tests create a few TEST_ prefixed grades (TEST_GRD_*, TEST_A_*, TEST_B_*) and several inward/outward entries. No cleanup — safe on isolated preview DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Public URL via EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env. Seeded users unchanged (admin/office/labour @steeltrack.com). Full regression at /app/backend/tests/test_steeltrack_backend.py (25 tests); new-feature coverage at /app/backend/tests/test_steeltrack_new_features.py (16 tests). Analytics returns exactly `days` buckets even for days with no entries. CSV export headers (21 cols) must stay stable — tests compare them exactly. Voice endpoint contract-tested only (422 w/o file, 400 for <1024 bytes); do not attempt real STT in CI unless a valid audio fixture is added.",
+  "rca_of_issue": "No bugs encountered."
+}

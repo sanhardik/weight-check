@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl, Platform, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect, router } from "expo-router";
 import { useAuth, apiFetch } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
+import { toast } from "@/src/ui/Toast";
 
 type Entry = {
   id: string;
@@ -51,9 +52,43 @@ export default function EntriesScreen() {
 
   if (!user) return <Redirect href="/login" />;
 
+  const canExport = user.role === "admin" || user.role === "office";
+  const exportCsv = async () => {
+    try {
+      const base = process.env.EXPO_PUBLIC_BACKEND_URL;
+      const qp = filter === "inward" || filter === "outward" ? `&direction=${filter}` : "";
+      const url = `${base}/api/entries.csv?token=${encodeURIComponent(token || "")}${qp}`;
+      if (Platform.OS === "web") {
+        // Trigger browser download
+        const a = (globalThis as any).document?.createElement("a");
+        if (a) {
+          a.href = url;
+          a.download = "steeltrack-entries.csv";
+          a.click();
+          toast("CSV downloaded", "success");
+        } else {
+          await Linking.openURL(url);
+        }
+      } else {
+        await Linking.openURL(url);
+        toast("CSV opening in browser", "success");
+      }
+    } catch (e: any) {
+      toast(e.message || "Export failed", "error");
+    }
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
-      <Header title={t("entries")} showBack />
+      <Header
+        title={t("entries")}
+        showBack
+        right={canExport ? (
+          <Pressable testID="export-csv-btn" onPress={exportCsv} style={styles2.exportBtn}>
+            <Text style={styles2.exportTxt}>CSV</Text>
+          </Pressable>
+        ) : undefined}
+      />
       <View style={s.chipHeader}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
           {FILTERS.map((f) => (
@@ -132,4 +167,15 @@ const s = StyleSheet.create({
   cardFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: spacing.sm, flexWrap: "wrap", gap: spacing.sm },
   statusTag: { fontSize: 10, fontWeight: "900", letterSpacing: 1, paddingHorizontal: 8, paddingVertical: 4 },
   by: { fontSize: 11, color: colors.muted, fontWeight: "700" },
+});
+
+const styles2 = StyleSheet.create({
+  exportBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1.5,
+    borderColor: colors.onSurfaceInverse,
+    backgroundColor: colors.success,
+  },
+  exportTxt: { color: colors.onSuccess, fontWeight: "900", fontSize: 11, letterSpacing: 1 },
 });

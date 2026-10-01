@@ -10,6 +10,7 @@ import { Header } from "@/src/ui/Header";
 import { BInput } from "@/src/ui/BInput";
 import { BButton } from "@/src/ui/BButton";
 import { toast } from "@/src/ui/Toast";
+import { VoiceInput } from "@/src/ui/VoiceInput";
 
 type Props = { direction: "inward" | "outward"; prefill?: any };
 
@@ -124,6 +125,14 @@ export function EntryForm({ direction, prefill }: Props) {
         </View>
 
         <Text style={s.section}>1. DIMENSIONS / आकार</Text>
+        <VoiceInput
+          testID="voice-fill"
+          onNumbers={(nums) => {
+            if (nums[0] != null) setThickness(String(nums[0]));
+            if (nums[1] != null) setWidth(String(nums[1]));
+            if (nums[2] != null) setLength(String(nums[2]));
+          }}
+        />
         <BInput testID="input-thickness" label={t("thickness")} value={String(thickness)} onChangeText={setThickness} keyboardType="decimal-pad" suffix="mm" />
         <BInput testID="input-width" label={t("width")} value={String(width)} onChangeText={setWidth} keyboardType="decimal-pad" suffix="mm" />
         <BInput testID="input-length" label={t("length")} value={String(length)} onChangeText={setLength} keyboardType="decimal-pad" suffix="mm" />

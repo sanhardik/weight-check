@@ -1,7 +1,11 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
+import csv
+import io
+import tempfile
+import re
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -441,6 +445,30 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
 
 @api_router.post("/entries/outward", response_model=EntryOut)
 async def create_outward(body: OutwardCreate, user: dict = Depends(require_role("admin", "labour", "office"))):
+    # Stock guardrail: compute available pieces for this T x W x L x grade
+    match = {
+        "thickness_mm": body.thickness_mm,
+        "width_mm": body.width_mm,
+        "length_mm": body.length_mm,
+        "grade": body.grade,
+    }
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": None,
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+        }},
+    ]
+    available = 0.0
+    async for g in db.entries.aggregate(pipeline):
+        available = float(g["in"]) - float(g["out"])
+    if body.pieces > available + 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail=f"INSUFFICIENT STOCK: only {available} pcs available for {body.thickness_mm}×{body.width_mm}×{body.length_mm}" + (f" ({body.grade})" if body.grade else ""),
+        )
+
     tw = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
     vpct, flagged = calc_variance(tw, body.actual_weight_kg)
     entry_number = await next_entry_number("outward")
@@ -566,6 +594,304 @@ async def root():
 @api_router.get("/calc/weight")
 async def calc_weight(thickness: float, width: float, length: float, pieces: float):
     return {"theoretical_weight_kg": calc_theoretical_weight(thickness, width, length, pieces)}
+
+
+# ---------- Analytics ----------
+@api_router.get("/analytics/summary")
+async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
+    """Daily totals for the last N days plus top parties/brokers (admin/office preferred,
+    but any logged-in user may view since this is just rollups)."""
+    today = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today - timedelta(days=days - 1)
+
+    daily_pipe = [
+        {"$match": {"created_at": {"$gte": start}}},
+        {"$group": {
+            "_id": {
+                "day": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
+                "direction": "$direction",
+            },
+            "pieces": {"$sum": "$pieces"},
+            "weight": {"$sum": "$theoretical_weight_kg"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    buckets: dict = {}
+    async for row in db.entries.aggregate(daily_pipe):
+        day = row["_id"]["day"]
+        direction = row["_id"]["direction"]
+        if day not in buckets:
+            buckets[day] = {"day": day, "inward_pcs": 0.0, "outward_pcs": 0.0,
+                            "inward_kg": 0.0, "outward_kg": 0.0,
+                            "inward_count": 0, "outward_count": 0}
+        buckets[day][f"{direction}_pcs"] = round(float(row["pieces"]), 2)
+        buckets[day][f"{direction}_kg"] = round(float(row["weight"]), 2)
+        buckets[day][f"{direction}_count"] = int(row["count"])
+
+    # Fill missing days
+    daily = []
+    for i in range(days):
+        d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        daily.append(buckets.get(d, {
+            "day": d, "inward_pcs": 0, "outward_pcs": 0,
+            "inward_kg": 0, "outward_kg": 0,
+            "inward_count": 0, "outward_count": 0,
+        }))
+
+    # Totals today & week
+    today_str = today.strftime("%Y-%m-%d")
+    today_row = buckets.get(today_str, {})
+    totals_today = {
+        "inward_pcs": today_row.get("inward_pcs", 0),
+        "outward_pcs": today_row.get("outward_pcs", 0),
+        "inward_kg": today_row.get("inward_kg", 0),
+        "outward_kg": today_row.get("outward_kg", 0),
+    }
+    totals_window = {
+        "inward_pcs": round(sum(b.get("inward_pcs", 0) for b in daily), 2),
+        "outward_pcs": round(sum(b.get("outward_pcs", 0) for b in daily), 2),
+        "inward_kg": round(sum(b.get("inward_kg", 0) for b in daily), 2),
+        "outward_kg": round(sum(b.get("outward_kg", 0) for b in daily), 2),
+    }
+
+    # Top parties (outward with party_name)
+    party_pipe = [
+        {"$match": {"direction": "outward", "party_name": {"$ne": None}, "created_at": {"$gte": start}}},
+        {"$group": {"_id": "$party_name", "pieces": {"$sum": "$pieces"},
+                     "weight": {"$sum": "$theoretical_weight_kg"}, "count": {"$sum": 1}}},
+        {"$sort": {"weight": -1}},
+        {"$limit": 5},
+    ]
+    top_parties = []
+    async for row in db.entries.aggregate(party_pipe):
+        top_parties.append({
+            "name": row["_id"],
+            "pieces": round(float(row["pieces"]), 2),
+            "weight": round(float(row["weight"]), 2),
+            "count": int(row["count"]),
+        })
+
+    # Top brokers
+    broker_pipe = [
+        {"$match": {"direction": "outward", "broker_name": {"$ne": None}, "created_at": {"$gte": start}}},
+        {"$group": {"_id": "$broker_name", "pieces": {"$sum": "$pieces"},
+                     "weight": {"$sum": "$theoretical_weight_kg"}, "count": {"$sum": 1}}},
+        {"$sort": {"weight": -1}},
+        {"$limit": 5},
+    ]
+    top_brokers = []
+    async for row in db.entries.aggregate(broker_pipe):
+        top_brokers.append({
+            "name": row["_id"],
+            "pieces": round(float(row["pieces"]), 2),
+            "weight": round(float(row["weight"]), 2),
+            "count": int(row["count"]),
+        })
+
+    # Pending office count
+    pending = await db.entries.count_documents({"invoice_no": {"$in": [None, ""]}})
+    total_entries = await db.entries.count_documents({})
+
+    return {
+        "window_days": days,
+        "daily": daily,
+        "totals_today": totals_today,
+        "totals_window": totals_window,
+        "top_parties": top_parties,
+        "top_brokers": top_brokers,
+        "pending_office": pending,
+        "total_entries": total_entries,
+    }
+
+
+# ---------- CSV Export ----------
+@api_router.get("/entries.csv")
+async def export_csv(
+    direction: Optional[str] = None,
+    token: Optional[str] = Query(None),
+    cred: HTTPAuthorizationCredentials = Depends(security),
+):
+    tok = cred.credentials if cred else token
+    if not tok:
+        raise HTTPException(status_code=401, detail="Missing token")
+    payload = decode_token(tok)
+    u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not u or u["role"] not in ("admin", "office"):
+        raise HTTPException(status_code=403, detail="Only admin/office may export")
+
+    q: dict = {}
+    if direction in ("inward", "outward"):
+        q["direction"] = direction
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Entry No.", "Direction", "Date", "Thickness (mm)", "Width (mm)", "Length (mm)",
+        "Pieces", "Grade", "Vehicle No.", "Broker", "Theoretical Wt (kg)", "Actual Wt (kg)",
+        "Variance %", "Flagged", "Invoice No.", "Party Name", "Rate (Rs)", "Payment Terms",
+        "Remarks", "Office Remarks", "Created By",
+    ])
+    user_cache: dict = {}
+    async for e in db.entries.find(q, {"_id": 0}).sort("created_at", -1):
+        uid = e.get("created_by")
+        if uid and uid not in user_cache:
+            ux = await db.users.find_one({"id": uid}, {"_id": 0, "name": 1})
+            user_cache[uid] = ux["name"] if ux else "Unknown"
+        created_at = e.get("created_at")
+        date_str = created_at.strftime("%Y-%m-%d %H:%M") if hasattr(created_at, "strftime") else str(created_at)
+        writer.writerow([
+            e.get("entry_number", ""),
+            (e.get("direction") or "").upper(),
+            date_str,
+            e.get("thickness_mm", ""),
+            e.get("width_mm", ""),
+            e.get("length_mm", ""),
+            e.get("pieces", ""),
+            e.get("grade") or "",
+            e.get("vehicle_number", ""),
+            e.get("broker_name") or "",
+            e.get("theoretical_weight_kg", ""),
+            e.get("actual_weight_kg") or "",
+            e.get("variance_pct") if e.get("variance_pct") is not None else "",
+            "YES" if e.get("variance_flagged") else "NO" if e.get("actual_weight_kg") else "",
+            e.get("invoice_no") or "",
+            e.get("party_name") or "",
+            e.get("rate") if e.get("rate") is not None else "",
+            e.get("payment_terms") or "",
+            e.get("remarks") or "",
+            e.get("office_remarks") or "",
+            user_cache.get(uid, "Unknown"),
+        ])
+
+    buf.seek(0)
+    filename = f"steeltrack-entries-{now_utc().strftime('%Y%m%d-%H%M')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------- Voice Transcription ----------
+_HINDI_WORD_TO_NUM = {
+    "शून्य": 0, "सिफर": 0,
+    "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पांच": 5, "पाँच": 5,
+    "छह": 6, "छः": 6, "सात": 7, "आठ": 8, "नौ": 9, "दस": 10,
+    "ग्यारह": 11, "बारह": 12, "तेरह": 13, "चौदह": 14, "पंद्रह": 15,
+    "सोलह": 16, "सत्रह": 17, "अठारह": 18, "उन्नीस": 19, "बीस": 20,
+    "सौ": 100, "हजार": 1000, "हज़ार": 1000, "लाख": 100000,
+    "पच्चीस": 25, "पचास": 50, "पचहत्तर": 75,
+    "आधा": 0.5, "डेढ़": 1.5,
+}
+_EN_WORD_TO_NUM = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+    "seventy": 70, "eighty": 80, "ninety": 90,
+    "hundred": 100, "thousand": 1000, "lakh": 100000,
+    "half": 0.5,
+}
+
+
+def _extract_numbers(text: str) -> list:
+    """Extract numbers from mixed Hindi/English text in reading order.
+    Finds explicit digit tokens first, then falls back to word combos like
+    'twelve fifty' = 1250 and 'दस' = 10. Keeps it simple and safe."""
+    if not text:
+        return []
+    nums: list = []
+
+    # Direct digits (supports decimals like 0.5)
+    for m in re.finditer(r"\d+(?:\.\d+)?", text):
+        try:
+            val = float(m.group(0))
+            if val.is_integer():
+                val = int(val)
+            nums.append(val)
+        except Exception:
+            pass
+
+    if nums:
+        return nums
+
+    # Word-based parsing (fallback) — handle Hindi + English combos.
+    tokens = re.findall(r"\S+", text.lower())
+    i = 0
+    combos: list = []
+    while i < len(tokens):
+        tok = tokens[i].strip(",.?!;:'\"")
+        base = _HINDI_WORD_TO_NUM.get(tok) or _EN_WORD_TO_NUM.get(tok)
+        if base is not None:
+            n = base
+            # look-ahead for "hundred", "thousand", or two-word combo like "twelve fifty"
+            if i + 1 < len(tokens):
+                nxt = tokens[i + 1].strip(",.?!;:'\"")
+                nxt_val = _HINDI_WORD_TO_NUM.get(nxt) or _EN_WORD_TO_NUM.get(nxt)
+                if nxt_val in (100, 1000, 100000):
+                    n = n * nxt_val
+                    i += 1
+                elif nxt_val and nxt_val < 100 and base >= 10 and base % 10 == 0 and base < 100:
+                    # "twenty five" = 25
+                    n = base + nxt_val
+                    i += 1
+                elif nxt_val and base in (10, 11, 12, 13, 14, 15, 16, 17, 18, 19) and nxt_val < 100:
+                    # "twelve fifty" = 1250 (col width convention)
+                    n = base * 100 + nxt_val
+                    i += 1
+            combos.append(n)
+        i += 1
+    return combos
+
+
+@api_router.post("/voice/transcribe")
+async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(current_user)):
+    """Accept short audio, transcribe via Emergent-managed OpenAI STT
+    (gpt-4o-mini-transcribe), and extract up to 3 numbers in reading order
+    for Thickness / Width / Length."""
+    data = await file.read()
+    if len(data) < 1024:
+        raise HTTPException(status_code=400, detail="Audio too short")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio too large (max 25MB)")
+
+    name = file.filename or "audio.m4a"
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else "m4a"
+    if ext not in {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm"}:
+        ext = "m4a"
+
+    text = ""
+    try:
+        from emergentintegrations.llm.openai import OpenAISpeechToText
+        stt = OpenAISpeechToText(api_key=EMERGENT_KEY)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            with open(tmp_path, "rb") as fh:
+                resp = await stt.transcribe(
+                    file=fh,
+                    model="gpt-4o-mini-transcribe",
+                    response_format="json",
+                    temperature=0.0,
+                    prompt="Steel plate dimensions in millimeters: thickness, width, length. मोटाई, चौड़ाई, लम्बाई मिलीमीटर में।",
+                )
+            text = (getattr(resp, "text", "") or "").strip()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Voice transcription failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
+
+    numbers = _extract_numbers(text)
+    return {
+        "text": text,
+        "numbers": numbers[:3],
+    }
 
 
 app.include_router(api_router)

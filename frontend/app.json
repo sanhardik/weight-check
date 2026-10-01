@@ -13,7 +13,8 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Scan weighment slips to record material weight",
         "NSPhotoLibraryUsageDescription": "Attach weighment slip photos from gallery",
-        "NSPhotoLibraryAddUsageDescription": "Save weighment slip photos to gallery"
+        "NSPhotoLibraryAddUsageDescription": "Save weighment slip photos to gallery",
+        "NSMicrophoneUsageDescription": "Dictate steel plate dimensions by voice"
       }
     },
     "android": {
@@ -22,7 +23,11 @@
         "backgroundColor": "#FF4500"
       },
       "package": "com.emergent.weightcheck.e45ony",
-      "permissions": ["CAMERA", "READ_MEDIA_IMAGES"]
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -55,6 +60,12 @@
         "expo-image-picker",
         {
           "photosPermission": "Attach weighment slip photos from gallery"
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Dictate steel plate dimensions by voice"
         }
       ]
     ],

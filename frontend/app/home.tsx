@@ -1,18 +1,36 @@
-import React from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { router, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useAuth } from "@/src/auth";
+import { useAuth, apiFetch } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
 
 type Tile = { testID: string; en: string; hi: string; href: string; bg: string; fg: string; sub?: string };
 
+type Analytics = {
+  totals_today: { inward_pcs: number; outward_pcs: number; inward_kg: number; outward_kg: number };
+  totals_window: { inward_pcs: number; outward_pcs: number; inward_kg: number; outward_kg: number };
+  pending_office: number;
+  total_entries: number;
+  daily: { day: string; inward_kg: number; outward_kg: number; inward_count: number; outward_count: number }[];
+  top_parties: { name: string; pieces: number; weight: number; count: number }[];
+  top_brokers: { name: string; pieces: number; weight: number; count: number }[];
+};
+
 export default function Home() {
   const insets = useSafeAreaInsets();
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const { t, lang } = useI18n();
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+
+  const showAnalytics = user && (user.role === "admin" || user.role === "office");
+
+  useEffect(() => {
+    if (!showAnalytics || !token) return;
+    apiFetch("/analytics/summary?days=7", {}, token).then(setAnalytics).catch(() => setAnalytics(null));
+  }, [showAnalytics, token]);
 
   if (!user) return <Redirect href="/login" />;
 
@@ -22,12 +40,14 @@ export default function Home() {
     tiles.push({ testID: "tile-outward", en: "OUTWARD", hi: "जावक", href: "/outward", bg: colors.surfaceInverse, fg: colors.onSurfaceInverse, sub: "- SEND MATERIAL" });
   }
   if (user.role === "admin" || user.role === "office") {
-    tiles.push({ testID: "tile-entries", en: "ENTRIES", hi: "एंट्री सूची", href: "/entries", bg: colors.surface, fg: colors.onSurface, sub: "VIEW & EDIT" });
+    tiles.push({ testID: "tile-entries", en: "ENTRIES", hi: "एंट्री सूची", href: "/entries", bg: colors.surface, fg: colors.onSurface, sub: "VIEW · EDIT · EXPORT" });
   }
   tiles.push({ testID: "tile-inventory", en: "INVENTORY", hi: "स्टॉक स्थिति", href: "/inventory", bg: colors.surfaceSecondary, fg: colors.onSurface, sub: "LIVE STOCK" });
   if (user.role === "admin") {
     tiles.push({ testID: "tile-users", en: "USERS", hi: "यूज़र", href: "/users", bg: colors.surfaceTertiary, fg: colors.onSurface, sub: "MANAGE ACCESS" });
   }
+
+  const maxDay = analytics ? Math.max(1, ...analytics.daily.map((d) => Math.max(d.inward_kg, d.outward_kg))) : 1;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
@@ -35,6 +55,92 @@ export default function Home() {
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + spacing.xl, gap: spacing.md }} testID="home-scroll">
         <Text style={s.greet}>HI, {user.name.toUpperCase()}</Text>
         <Text style={s.greetSub}>{t("select_action")}</Text>
+
+        {showAnalytics ? (
+          <View testID="analytics-card" style={s.analytics}>
+            <View style={s.analyticsHdr}>
+              <Text style={s.analyticsTitle}>TODAY · आज</Text>
+              <Text style={s.analyticsHint}>{analytics ? "7-DAY TREND" : ""}</Text>
+            </View>
+            {!analytics ? (
+              <View style={{ paddingVertical: spacing.lg }}><ActivityIndicator color={colors.brand} /></View>
+            ) : (
+              <>
+                <View style={s.statRow}>
+                  <View style={[s.statCell, { backgroundColor: colors.brand }]}>
+                    <Text style={[s.statLbl, { color: colors.onBrand }]}>IN · आवक</Text>
+                    <Text style={[s.statVal, { color: colors.onBrand }]} testID="today-inward-kg">{analytics.totals_today.inward_kg.toFixed(1)}</Text>
+                    <Text style={[s.statUnit, { color: colors.onBrand }]}>KG · {analytics.totals_today.inward_pcs} PCS</Text>
+                  </View>
+                  <View style={[s.statCell, { backgroundColor: colors.surfaceInverse }]}>
+                    <Text style={[s.statLbl, { color: colors.onSurfaceInverse }]}>OUT · जावक</Text>
+                    <Text style={[s.statVal, { color: colors.onSurfaceInverse }]} testID="today-outward-kg">{analytics.totals_today.outward_kg.toFixed(1)}</Text>
+                    <Text style={[s.statUnit, { color: colors.onSurfaceInverse }]}>KG · {analytics.totals_today.outward_pcs} PCS</Text>
+                  </View>
+                </View>
+
+                <View style={s.chartWrap}>
+                  {analytics.daily.map((d, i) => {
+                    const inH = Math.round((d.inward_kg / maxDay) * 60);
+                    const outH = Math.round((d.outward_kg / maxDay) * 60);
+                    const dayLabel = d.day.slice(5); // MM-DD
+                    return (
+                      <View key={d.day} style={s.barCol} testID={`bar-${i}`}>
+                        <View style={s.barStack}>
+                          <View style={[s.barIn, { height: inH }]} />
+                          <View style={[s.barOut, { height: outH }]} />
+                        </View>
+                        <Text style={s.barLbl}>{dayLabel}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+                <View style={s.legendRow}>
+                  <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: colors.brand }]} /><Text style={s.legendTxt}>INWARD</Text></View>
+                  <View style={s.legendItem}><View style={[s.legendDot, { backgroundColor: colors.surfaceInverse }]} /><Text style={s.legendTxt}>OUTWARD</Text></View>
+                  <View style={{ flex: 1 }} />
+                  <Text style={s.legendTxt}>7D: {analytics.totals_window.inward_kg.toFixed(0)}↓ · {analytics.totals_window.outward_kg.toFixed(0)}↑</Text>
+                </View>
+
+                {analytics.pending_office > 0 ? (
+                  <Pressable
+                    testID="pending-office-pill"
+                    onPress={() => router.push("/entries")}
+                    style={s.pendingPill}
+                  >
+                    <Text style={s.pendingTxt}>⏳ {analytics.pending_office} ENTRIES PENDING OFFICE DETAILS →</Text>
+                  </Pressable>
+                ) : null}
+
+                {analytics.top_parties.length > 0 ? (
+                  <View style={{ marginTop: spacing.md }}>
+                    <Text style={s.sectionTitle}>TOP PARTIES · 7D</Text>
+                    {analytics.top_parties.slice(0, 3).map((p, i) => (
+                      <View key={p.name} style={s.topRow} testID={`top-party-${i}`}>
+                        <Text style={s.topRank}>#{i + 1}</Text>
+                        <Text style={s.topName} numberOfLines={1}>{p.name}</Text>
+                        <Text style={s.topWeight}>{p.weight.toFixed(0)} kg</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+
+                {analytics.top_brokers.length > 0 ? (
+                  <View style={{ marginTop: spacing.md }}>
+                    <Text style={s.sectionTitle}>TOP BROKERS · 7D</Text>
+                    {analytics.top_brokers.slice(0, 3).map((b, i) => (
+                      <View key={b.name} style={s.topRow} testID={`top-broker-${i}`}>
+                        <Text style={s.topRank}>#{i + 1}</Text>
+                        <Text style={s.topName} numberOfLines={1}>{b.name}</Text>
+                        <Text style={s.topWeight}>{b.weight.toFixed(0)} kg</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </>
+            )}
+          </View>
+        ) : null}
 
         <View style={s.grid}>
           {tiles.map((tile) => (
@@ -62,24 +168,44 @@ export default function Home() {
 const s = StyleSheet.create({
   greet: { fontSize: 24, fontWeight: "900", color: colors.onSurface, letterSpacing: 1, marginTop: spacing.sm },
   greetSub: { fontSize: 12, fontWeight: "900", color: colors.muted, letterSpacing: 2, marginBottom: spacing.md },
-  grid: { gap: spacing.md },
-  tile: {
-    minHeight: 110,
-    padding: spacing.lg,
-    borderWidth: 1.5,
-    borderColor: colors.borderStrong,
-    justifyContent: "space-between",
-  },
+
+  analytics: { borderWidth: 1.5, borderColor: colors.borderStrong, padding: spacing.md, backgroundColor: colors.surface, marginBottom: spacing.sm },
+  analyticsHdr: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
+  analyticsTitle: { fontSize: 14, fontWeight: "900", letterSpacing: 2, color: colors.onSurface },
+  analyticsHint: { fontSize: 10, fontWeight: "900", letterSpacing: 2, color: colors.muted },
+
+  statRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.md },
+  statCell: { flex: 1, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong },
+  statLbl: { fontSize: 11, fontWeight: "900", letterSpacing: 2 },
+  statVal: { fontSize: 28, fontWeight: "900", fontFamily: "Courier", marginTop: 4 },
+  statUnit: { fontSize: 10, fontWeight: "700", letterSpacing: 1, marginTop: 2, opacity: 0.9 },
+
+  chartWrap: { flexDirection: "row", alignItems: "flex-end", gap: 4, height: 80, borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, paddingBottom: 4 },
+  barCol: { flex: 1, alignItems: "center", justifyContent: "flex-end" },
+  barStack: { flexDirection: "row", gap: 2, alignItems: "flex-end", height: 65 },
+  barIn: { width: 7, backgroundColor: colors.brand },
+  barOut: { width: 7, backgroundColor: colors.surfaceInverse },
+  barLbl: { fontSize: 8, fontWeight: "900", letterSpacing: 0.5, color: colors.muted, marginTop: 2, fontFamily: "Courier" },
+
+  legendRow: { flexDirection: "row", alignItems: "center", marginTop: spacing.sm, gap: spacing.md, flexWrap: "wrap" },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  legendDot: { width: 10, height: 10, borderWidth: 1, borderColor: colors.borderStrong },
+  legendTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 1, color: colors.muted },
+
+  pendingPill: { marginTop: spacing.md, padding: spacing.md, backgroundColor: colors.warning, borderWidth: 1.5, borderColor: colors.borderStrong },
+  pendingTxt: { color: colors.onWarning, fontWeight: "900", letterSpacing: 1, fontSize: 12 },
+
+  sectionTitle: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: spacing.xs },
+  topRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider, gap: spacing.sm },
+  topRank: { fontSize: 13, fontWeight: "900", color: colors.brand, fontFamily: "Courier", width: 24 },
+  topName: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface },
+  topWeight: { fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
+
+  grid: { gap: spacing.md, marginTop: spacing.sm },
+  tile: { minHeight: 110, padding: spacing.lg, borderWidth: 1.5, borderColor: colors.borderStrong, justifyContent: "space-between" },
   tileHi: { fontSize: 28, fontWeight: "900", letterSpacing: 0.5 },
   tileEn: { fontSize: 20, fontWeight: "900", letterSpacing: 2, marginTop: 2 },
   tileSub: { fontSize: 11, fontWeight: "700", letterSpacing: 2, marginTop: spacing.sm, opacity: 0.8 },
-  logout: {
-    marginTop: spacing.lg,
-    paddingVertical: spacing.md,
-    borderWidth: 1.5,
-    borderColor: colors.error,
-    alignItems: "center",
-    backgroundColor: colors.surface,
-  },
+  logout: { marginTop: spacing.lg, paddingVertical: spacing.md, borderWidth: 1.5, borderColor: colors.error, alignItems: "center", backgroundColor: colors.surface },
   logoutTxt: { color: colors.error, fontWeight: "900", letterSpacing: 2, fontSize: 14 },
 });

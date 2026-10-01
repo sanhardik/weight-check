@@ -59,6 +59,10 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Not Yet Built (Future)
 - Password reset flow
 - Entry edit/soft-delete
-- Dashboard analytics (charts)
-- CSV export
 - Push notifications
+
+## Iteration 2 — Analytics, Export, Voice, Guardrail (shipped)
+- `GET /api/analytics/summary?days=N` — daily inward/outward (pcs + kg), today's totals, 7-day window totals, top 5 parties, top 5 brokers, pending office count — visible on home for admin & office
+- `GET /api/entries.csv[?direction=][&token=]` — 21-column CSV export, admin/office only, downloadable via browser (query token for native Linking.openURL)
+- `POST /api/voice/transcribe` — accepts audio multipart, uses Emergent OpenAI STT `gpt-4o-mini-transcribe`, returns `{text, numbers}`; frontend parses up to 3 numbers for Thickness/Width/Length (Hindi + English word-to-number)
+- Stock guardrail — `POST /api/entries/outward` blocks with 400 `INSUFFICIENT STOCK` when pieces > available (grouped by T×W×L×grade)
