@@ -6,6 +6,13 @@ import csv
 import io
 import tempfile
 import re
+import base64
+import json
+import httpx
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlparse
+import ipaddress
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -33,6 +40,10 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGO = os.environ.get("JWT_ALGO", "HS256")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "SteelTrack")
+LOW_STOCK_DEFAULT_PCS = float(os.environ.get("LOW_STOCK_DEFAULT_PCS", "2"))
 
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
@@ -692,6 +703,27 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     pending = await db.entries.count_documents({"invoice_no": {"$in": [None, ""]}})
     total_entries = await db.entries.count_documents({})
 
+    # Low-stock groups (<= threshold, >0 available)
+    threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
+    stock_pipe = [
+        {"$group": {
+            "_id": {"t": "$thickness_mm", "w": "$width_mm", "l": "$length_mm", "g": "$grade"},
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+        }},
+    ]
+    low_stock = []
+    async for g in db.entries.aggregate(stock_pipe):
+        avail = float(g["in"]) - float(g["out"])
+        if 0 < avail <= threshold:
+            t = g["_id"]["t"]; w = g["_id"]["w"]; l = g["_id"]["l"]; grade = g["_id"].get("g")
+            low_stock.append({
+                "thickness_mm": t, "width_mm": w, "length_mm": l, "grade": grade,
+                "pieces_available": round(avail, 3),
+                "theoretical_weight_available_kg": calc_theoretical_weight(t, w, l, avail),
+            })
+    low_stock.sort(key=lambda x: x["pieces_available"])
+
     return {
         "window_days": days,
         "daily": daily,
@@ -701,6 +733,8 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
         "top_brokers": top_brokers,
         "pending_office": pending,
         "total_entries": total_entries,
+        "low_stock_threshold_pcs": threshold,
+        "low_stock": low_stock,
     }
 
 
@@ -892,6 +926,436 @@ async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(cu
         "text": text,
         "numbers": numbers[:3],
     }
+
+
+# ---------- Vision OCR: read weight from slip ----------
+@api_router.post("/vision/weight")
+async def vision_weight(
+    file: Optional[UploadFile] = File(None),
+    slip_photo_path: Optional[str] = Form(None),
+    user: dict = Depends(current_user),
+):
+    """Read NET weight (kg) from a weighment slip photo using OpenAI vision via
+    Emergent universal key. Caller may upload the image or reference an already
+    uploaded `slip_photo_path`."""
+    data: Optional[bytes] = None
+    mime = "image/jpeg"
+    if file is not None:
+        data = await file.read()
+        mime = file.content_type or "image/jpeg"
+    elif slip_photo_path:
+        upload = await db.uploads.find_one({"path": slip_photo_path}, {"_id": 0})
+        if not upload:
+            raise HTTPException(status_code=404, detail="Slip photo not found")
+        if user["role"] == "labour" and upload.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            data, mime = await run_in_threadpool(_sync_get_object, slip_photo_path)
+        except requests.HTTPError:
+            raise HTTPException(status_code=404, detail="Slip photo not accessible")
+    else:
+        raise HTTPException(status_code=400, detail="Provide file or slip_photo_path")
+
+    if not data or len(data) < 500:
+        raise HTTPException(status_code=400, detail="Image too small")
+
+    # Normalise mime
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        mime = "image/jpeg"
+
+    img_b64 = base64.b64encode(data).decode("ascii")
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+        chat = LlmChat(
+            api_key=EMERGENT_KEY,
+            session_id=f"vision-{user['id']}-{uuid.uuid4().hex[:8]}",
+            system_message=(
+                "You are an OCR assistant for Indian steel weighment slips. "
+                "Read numbers printed on the slip. The slip shows GROSS, TARE, and NET weights in kilograms. "
+                "ALWAYS return the NET weight when present; if only one weight is shown, return that. "
+                "Respond ONLY as compact JSON: {\"weight_kg\": <number or null>, \"unit\": \"kg\", \"confidence\": <0..1>, \"raw\": \"<short text seen>\"}. "
+                "If no weight is clearly visible, use null and confidence 0."
+            ),
+        ).with_model("openai", "gpt-4o-mini")
+
+        user_msg = UserMessage(
+            text="Extract the NET weight in kilograms from this weighment slip. Return JSON only.",
+            file_contents=[ImageContent(image_base64=img_b64)],
+        )
+
+        # Prefer non-streaming for a short JSON response
+        response = await chat.send_message(user_msg)
+        text_out = str(response) if response is not None else ""
+    except Exception as e:
+        logger.error(f"Vision OCR failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Vision read failed: {e}")
+
+    # Extract JSON from response
+    weight_kg: Optional[float] = None
+    confidence: float = 0.0
+    raw_text = ""
+    try:
+        # Find a JSON object in the response (model may wrap in ```)
+        m = re.search(r"\{.*\}", text_out, re.S)
+        if m:
+            parsed = json.loads(m.group(0))
+            w = parsed.get("weight_kg")
+            if isinstance(w, (int, float)):
+                weight_kg = float(w)
+            confidence = float(parsed.get("confidence", 0.0))
+            raw_text = str(parsed.get("raw", ""))[:200]
+    except Exception:
+        pass
+
+    # Fallback: regex a plausible kg number
+    if weight_kg is None:
+        for m in re.finditer(r"(\d{2,6}(?:\.\d{1,3})?)\s*(?:kg|KG|kilo)?", text_out):
+            try:
+                val = float(m.group(1))
+                if 1 <= val <= 100000:
+                    weight_kg = val
+                    confidence = max(confidence, 0.4)
+                    break
+            except Exception:
+                pass
+
+    return {
+        "weight_kg": weight_kg,
+        "confidence": confidence,
+        "raw": raw_text or (text_out[:160] if text_out else ""),
+    }
+
+
+# ---------- Settings (low-stock threshold etc.) ----------
+async def _get_setting(key: str, default):
+    doc = await db.settings.find_one({"_id": key})
+    return doc.get("value", default) if doc else default
+
+
+@api_router.get("/settings/low-stock")
+async def get_low_stock_setting(user: dict = Depends(current_user)):
+    v = await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS)
+    return {"low_stock_threshold_pcs": float(v)}
+
+
+class LowStockUpdate(BaseModel):
+    low_stock_threshold_pcs: float = Field(ge=0)
+
+
+@api_router.patch("/settings/low-stock")
+async def set_low_stock_setting(body: LowStockUpdate, admin: dict = Depends(require_role("admin"))):
+    await db.settings.update_one(
+        {"_id": "low_stock_threshold_pcs"},
+        {"$set": {"value": float(body.low_stock_threshold_pcs), "updated_by": admin["id"], "updated_at": now_utc()}},
+        upsert=True,
+    )
+    return {"low_stock_threshold_pcs": float(body.low_stock_threshold_pcs)}
+
+
+# ---------- Email helpers (Resend via Emergent proxy) ----------
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = ("reply with your password", "reply with the code", "send your password", "cvv",
+             "send us your password", "enter your password below", "confirm your card number",
+             "your full card number", "seed phrase", "recovery phrase", "verify your card",
+             "social security number", "confirm your bank details")
+_HOSTISH = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags, self.urls, self.anchors = set(), [], []
+        self._href, self._text = None, []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks the recipient for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = urlparse(low).hostname or ""
+        if not _host_ok(host) or urlparse(low).username is not None:
+            raise ValueError(f"Shortened, numeric-host or credential-bearing URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text {m.group(1)!r} ≠ real link host {real!r} (G3)")
+
+
+async def _send_email(*, to: str, subject: str, html: str) -> Optional[str]:
+    if not EMAIL_KEY:
+        raise HTTPException(status_code=503, detail="Email not configured")
+    _assert_safe_email(subject, html)
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            resp = await c.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": EMAIL_KEY},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return resp.json().get("id")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Email send failed: {e.response.status_code} {e.response.text}")
+        raise HTTPException(status_code=502, detail="Failed to send email")
+
+
+# ---------- PDF Report ----------
+def _build_party_pdf(party: str, entries: list, start: datetime, end: datetime) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
+                            topMargin=15 * mm, bottomMargin=15 * mm, title=f"SteelTrack {party} Statement")
+    styles = getSampleStyleSheet()
+    story: list = []
+
+    hdr = ParagraphStyle("hdr", parent=styles["Heading1"], fontSize=20, textColor=rl_colors.HexColor("#111111"), spaceAfter=4)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=rl_colors.HexColor("#52525B"), spaceAfter=12)
+    bar = ParagraphStyle("bar", parent=styles["Normal"], fontSize=11, textColor=rl_colors.HexColor("#FFFFFF"),
+                         backColor=rl_colors.HexColor("#FF4500"), leftIndent=0, borderPadding=8, spaceAfter=10)
+
+    story.append(Paragraph("STEEL<font color='#FF4500'>TRACK</font>", hdr))
+    story.append(Paragraph(f"Statement for {escape(party)}", sub))
+    story.append(Paragraph(f"Period: {start.strftime('%d %b %Y')} to {end.strftime('%d %b %Y')} &nbsp;&nbsp;·&nbsp;&nbsp; Generated: {now_utc().strftime('%d %b %Y %H:%M UTC')}", sub))
+    story.append(Spacer(1, 6))
+
+    rows = [["Date", "Entry No.", "Dir.", "Dimensions (mm)", "Pcs", "Grade", "Vehicle", "Wt (kg)", "Invoice", "Rate"]]
+    total_pcs = 0.0
+    total_wt = 0.0
+    total_rate_value = 0.0
+    for e in entries:
+        dt = e.get("created_at")
+        date_str = dt.strftime("%d-%m-%Y") if hasattr(dt, "strftime") else str(dt)[:10]
+        rows.append([
+            date_str,
+            e.get("entry_number", ""),
+            (e.get("direction") or "").upper()[:3],
+            f"{e.get('thickness_mm')}×{e.get('width_mm')}×{e.get('length_mm')}",
+            str(e.get("pieces", "")),
+            e.get("grade") or "-",
+            e.get("vehicle_number", ""),
+            f"{float(e.get('theoretical_weight_kg', 0) or 0):.1f}",
+            e.get("invoice_no") or "-",
+            f"{e.get('rate'):.2f}" if e.get("rate") else "-",
+        ])
+        total_pcs += float(e.get("pieces", 0) or 0)
+        total_wt += float(e.get("theoretical_weight_kg", 0) or 0)
+        if e.get("rate") and e.get("theoretical_weight_kg"):
+            total_rate_value += float(e["rate"]) * float(e["theoretical_weight_kg"])
+
+    rows.append(["", "", "", "TOTAL", f"{total_pcs:.2f}", "", "", f"{total_wt:.2f}", "", f"{total_rate_value:,.2f}"])
+
+    tbl = Table(rows, repeatRows=1, colWidths=[60, 80, 32, 90, 36, 46, 60, 50, 54, 44])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#111111")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#E4E4E7")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, -1), (-1, -1), rl_colors.HexColor("#F4F4F5")),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(
+        f"<b>{len(entries)}</b> entries &nbsp;·&nbsp; <b>{total_pcs:.2f}</b> pieces &nbsp;·&nbsp; <b>{total_wt:,.2f} kg</b> theoretical weight",
+        styles["Normal"]))
+    doc.build(story)
+    return buf.getvalue()
+
+
+class PartyReportRequest(BaseModel):
+    party_name: str
+    from_date: Optional[str] = None  # YYYY-MM-DD
+    to_date: Optional[str] = None
+
+
+@api_router.post("/reports/party-statement")
+async def generate_party_statement(
+    body: PartyReportRequest,
+    user: dict = Depends(require_role("admin", "office")),
+):
+    """Generate PDF statement for a party and email a signed download link to the
+    logged-in user's own email. Recipient is server-side (G4)."""
+    if not user.get("email"):
+        raise HTTPException(status_code=400, detail="User has no email on file")
+    party = body.party_name.strip()
+    if not party:
+        raise HTTPException(status_code=400, detail="party_name required")
+
+    today = now_utc()
+    if body.from_date and body.to_date:
+        try:
+            start = datetime.strptime(body.from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            end = datetime.strptime(body.to_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
+    else:
+        # Default to current calendar month
+        start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = today
+
+    entries = []
+    async for e in db.entries.find(
+        {"party_name": party, "created_at": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("created_at", 1):
+        entries.append(e)
+
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No entries for party '{party}' in that period")
+
+    pdf_bytes = await run_in_threadpool(_build_party_pdf, party, entries, start, end)
+
+    report_id = uuid.uuid4().hex
+    path = f"{APP_NAME}/reports/{user['id']}/{report_id}.pdf"
+    await run_in_threadpool(_sync_put_object, path, pdf_bytes, "application/pdf")
+    await db.reports.insert_one({
+        "id": report_id,
+        "path": path,
+        "owner_id": user["id"],
+        "party_name": party,
+        "from": start,
+        "to": end,
+        "entries_count": len(entries),
+        "created_at": now_utc(),
+    })
+
+    public_base = (os.environ.get("EXPO_PUBLIC_BACKEND_URL") or "").strip()
+    if not public_base.startswith("https://"):
+        # Fallback for local dev: still produce a URL even if backend URL missing
+        public_base = "https://weight-check-30.preview.emergentagent.com"
+    # Short-lived token (24h) scoped to download this report
+    dl_token = pyjwt.encode(
+        {"sub": user["id"], "report_id": report_id, "exp": now_utc() + timedelta(hours=24)},
+        JWT_SECRET, algorithm=JWT_ALGO,
+    )
+    download_url = f"{public_base}/api/reports/{report_id}.pdf?token={dl_token}"
+
+    period_label = f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}"
+    subject = f"Statement for {party} ({period_label}) — {EMAIL_FROM_NAME}"
+    safe_party = escape(party)
+    safe_name = escape(user.get("name") or user.get("email") or "")
+    html = (
+        f"<table role='presentation' width='100%' style='font-family:Arial,sans-serif;background:#ffffff'>"
+        f"<tr><td style='padding:24px'>"
+        f"<h2 style='margin:0 0 4px 0;color:#111111'>SteelTrack Statement</h2>"
+        f"<p style='margin:0 0 16px 0;color:#52525B;font-size:13px'>Party: <b>{safe_party}</b></p>"
+        f"<p style='margin:0 0 8px 0;color:#111111'>Hi {safe_name},</p>"
+        f"<p style='margin:0 0 12px 0;color:#111111'>Your requested statement for <b>{safe_party}</b> covering {escape(period_label)} is ready. "
+        f"It contains <b>{len(entries)}</b> entries. Tap the button below to download the PDF.</p>"
+        f"<p style='margin:16px 0'><a href='{escape(download_url)}' "
+        f"style='background:#FF4500;color:#ffffff;padding:12px 20px;text-decoration:none;font-weight:bold;letter-spacing:1px;display:inline-block'>DOWNLOAD PDF</a></p>"
+        f"<p style='margin:16px 0 0 0;font-size:11px;color:#888'>Download link expires in 24 hours. Sent by {escape(EMAIL_FROM_NAME)}. "
+        f"We never ask for your password or card details by email.</p>"
+        f"</td></tr></table>"
+    )
+
+    email_id = await _send_email(to=user["email"], subject=subject, html=html)
+
+    return {
+        "report_id": report_id,
+        "download_url": download_url,
+        "email_id": email_id,
+        "sent_to": user["email"],
+        "entries_count": len(entries),
+        "party_name": party,
+        "from": start.date().isoformat(),
+        "to": end.date().isoformat(),
+    }
+
+
+@api_router.get("/reports/{report_id}.pdf")
+async def download_report(
+    report_id: str,
+    token: Optional[str] = Query(None),
+    cred: HTTPAuthorizationCredentials = Depends(security),
+):
+    tok = cred.credentials if cred else token
+    if not tok:
+        raise HTTPException(status_code=401, detail="Missing token")
+    payload = decode_token(tok)
+    rep = await db.reports.find_one({"id": report_id}, {"_id": 0})
+    if not rep:
+        raise HTTPException(status_code=404, detail="Report not found")
+    # Allow owner, or any admin/office user with full token
+    uid = payload["sub"]
+    rep_id_scope = payload.get("report_id")
+    is_owner = rep["owner_id"] == uid and (rep_id_scope is None or rep_id_scope == report_id)
+    if not is_owner:
+        u = await db.users.find_one({"id": uid}, {"_id": 0, "password_hash": 0})
+        if not u or u["role"] not in ("admin", "office"):
+            raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        content, ctype = await run_in_threadpool(_sync_get_object, rep["path"])
+    except requests.HTTPError:
+        raise HTTPException(status_code=404, detail="PDF not accessible")
+    return Response(
+        content=content, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{rep["party_name"]}-statement-{report_id[:8]}.pdf"'},
+    )
+
+
+# ---------- Party & Grade helpers ----------
+@api_router.get("/parties")
+async def list_parties(user: dict = Depends(require_role("admin", "office"))):
+    """Distinct party names seen on entries (for the report picker)."""
+    parties = await db.entries.distinct("party_name")
+    out = [p for p in parties if p]
+    out.sort(key=lambda s: s.lower())
+    return out
 
 
 app.include_router(api_router)

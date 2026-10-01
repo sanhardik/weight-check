@@ -17,6 +17,8 @@ type Analytics = {
   daily: { day: string; inward_kg: number; outward_kg: number; inward_count: number; outward_count: number }[];
   top_parties: { name: string; pieces: number; weight: number; count: number }[];
   top_brokers: { name: string; pieces: number; weight: number; count: number }[];
+  low_stock_threshold_pcs: number;
+  low_stock: { thickness_mm: number; width_mm: number; length_mm: number; grade: string | null; pieces_available: number; theoretical_weight_available_kg: number }[];
 };
 
 export default function Home() {
@@ -101,6 +103,31 @@ export default function Home() {
                   <View style={{ flex: 1 }} />
                   <Text style={s.legendTxt}>7D: {analytics.totals_window.inward_kg.toFixed(0)}↓ · {analytics.totals_window.outward_kg.toFixed(0)}↑</Text>
                 </View>
+
+                {analytics.low_stock && analytics.low_stock.length > 0 ? (
+                  <Pressable
+                    testID="low-stock-card"
+                    onPress={() => router.push("/inventory")}
+                    style={s.lowStockCard}
+                  >
+                    <View style={s.lowStockHdr}>
+                      <Text style={s.lowStockTitle}>⚠ LOW STOCK · कम स्टॉक</Text>
+                      <Text style={s.lowStockHint}>≤ {analytics.low_stock_threshold_pcs} PCS</Text>
+                    </View>
+                    {analytics.low_stock.slice(0, 4).map((ls, i) => (
+                      <View key={`${ls.thickness_mm}-${ls.width_mm}-${ls.length_mm}-${ls.grade}-${i}`} style={s.lowStockRow} testID={`low-stock-${i}`}>
+                        <Text style={s.lowStockDim}>
+                          {ls.thickness_mm}×{ls.width_mm}×{ls.length_mm}
+                          {ls.grade ? ` · ${ls.grade}` : ""}
+                        </Text>
+                        <Text style={s.lowStockPcs}>{ls.pieces_available} PCS</Text>
+                      </View>
+                    ))}
+                    {analytics.low_stock.length > 4 ? (
+                      <Text style={s.lowStockMore}>+ {analytics.low_stock.length - 4} more → VIEW INVENTORY</Text>
+                    ) : null}
+                  </Pressable>
+                ) : null}
 
                 {analytics.pending_office > 0 ? (
                   <Pressable
@@ -195,6 +222,14 @@ const s = StyleSheet.create({
   pendingPill: { marginTop: spacing.md, padding: spacing.md, backgroundColor: colors.warning, borderWidth: 1.5, borderColor: colors.borderStrong },
   pendingTxt: { color: colors.onWarning, fontWeight: "900", letterSpacing: 1, fontSize: 12 },
 
+  lowStockCard: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.error, backgroundColor: colors.surface },
+  lowStockHdr: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm },
+  lowStockTitle: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.error },
+  lowStockHint: { fontSize: 10, fontWeight: "900", letterSpacing: 1, color: colors.muted, fontFamily: "Courier" },
+  lowStockRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  lowStockDim: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
+  lowStockPcs: { fontSize: 13, fontWeight: "900", color: colors.error, fontFamily: "Courier" },
+  lowStockMore: { fontSize: 10, fontWeight: "900", color: colors.muted, letterSpacing: 1, marginTop: 6 },
   sectionTitle: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: spacing.xs },
   topRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider, gap: spacing.sm },
   topRank: { fontSize: 13, fontWeight: "900", color: colors.brand, fontFamily: "Courier", width: 24 },

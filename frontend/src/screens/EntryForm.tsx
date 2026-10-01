@@ -33,6 +33,8 @@ export function EntryForm({ direction, prefill }: Props) {
   const [photoPath, setPhotoPath] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrText, setOcrText] = useState<string>("");
 
   const nf = (v: string) => parseFloat(v) || 0;
   const theoretical = nf(thickness) * nf(width) * nf(length) * nf(pieces) * 7.85e-6;
@@ -68,6 +70,27 @@ export function EntryForm({ direction, prefill }: Props) {
       const up = await apiFetch("/upload", { method: "POST", body: form }, token);
       setPhotoPath(up.path);
       toast("Photo uploaded", "success");
+      // Trigger OCR to auto-fill actual weight
+      setOcrLoading(true);
+      try {
+        const ocr = await apiFetch(
+          "/vision/weight",
+          { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) },
+          token
+        );
+        if (ocr?.weight_kg != null) {
+          setActualWeight(String(ocr.weight_kg));
+          setOcrText(ocr.raw || "");
+          toast(`📷 Weight read: ${ocr.weight_kg} kg`, "success");
+        } else {
+          toast("Could not read weight — enter manually", "warning");
+        }
+      } catch (e: any) {
+        // Non-fatal — user can type weight
+        toast(`OCR skipped: ${e.message || "no reading"}`, "warning");
+      } finally {
+        setOcrLoading(false);
+      }
     } catch (e: any) {
       toast(e.message || "Upload failed", "error");
       setPhotoUri(null);
@@ -151,6 +174,11 @@ export function EntryForm({ direction, prefill }: Props) {
           <Text style={s.weightValue} testID="theoretical-weight">{theoretical.toFixed(3)} {t("weight_kg")}</Text>
         </View>
         <BInput testID="input-actual-weight" label={t("actual_weight")} value={actualWeight} onChangeText={setActualWeight} keyboardType="decimal-pad" suffix="kg" />
+        {ocrLoading ? (
+          <View style={s.ocrBanner}><ActivityIndicator color={colors.onSurfaceInverse} /><Text style={s.ocrTxt}>📷 READING SLIP...</Text></View>
+        ) : ocrText ? (
+          <View style={[s.ocrBanner, { backgroundColor: colors.success }]}><Text style={[s.ocrTxt, { color: colors.onSuccess }]}>✓ OCR: {ocrText}</Text></View>
+        ) : null}
         {varianceRaw !== null && (
           <View style={[s.varianceCard, flagged ? s.varianceBad : s.varianceOk]}>
             <Text style={[s.varianceLabel, { color: flagged ? colors.onError : colors.onSuccess }]}>
@@ -219,4 +247,17 @@ const s = StyleSheet.create({
   photoOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.5)", alignItems: "center", justifyContent: "center" },
   retakeBtn: { position: "absolute", top: 8, right: 8, backgroundColor: colors.surfaceInverse, paddingVertical: 6, paddingHorizontal: 10, borderWidth: 1.5, borderColor: colors.borderStrong },
   retakeTxt: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 11, letterSpacing: 1 },
+  ocrBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.surfaceInverse,
+    borderWidth: 1.5,
+    borderColor: colors.borderStrong,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.md,
+  },
+  ocrTxt: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 11, letterSpacing: 1, flexShrink: 1 },
 });

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator } from "react-native";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { View, Text, StyleSheet, FlatList, RefreshControl, ActivityIndicator, Pressable, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect } from "expo-router";
 import { useAuth, apiFetch } from "@/src/auth";
@@ -14,12 +14,16 @@ type Group = {
   theoretical_weight_available_kg: number;
 };
 
+const ALL_KEY = "__ALL__";
+const NO_GRADE_KEY = "__NONE__";
+
 export default function InventoryScreen() {
   const insets = useSafeAreaInsets();
   const { user, token } = useAuth();
   const { t } = useI18n();
   const [groups, setGroups] = useState<Group[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedGrade, setSelectedGrade] = useState<string>(ALL_KEY);
 
   const load = useCallback(async () => {
     const d = await apiFetch("/inventory", {}, token);
@@ -33,14 +37,55 @@ export default function InventoryScreen() {
     try { await load(); } finally { setRefreshing(false); }
   };
 
+  const grades = useMemo(() => {
+    const set = new Set<string>();
+    (groups || []).forEach((g) => set.add(g.grade || NO_GRADE_KEY));
+    return Array.from(set).sort();
+  }, [groups]);
+
+  const filtered = useMemo(() => {
+    if (!groups) return null;
+    if (selectedGrade === ALL_KEY) return groups;
+    return groups.filter((g) => (g.grade || NO_GRADE_KEY) === selectedGrade);
+  }, [groups, selectedGrade]);
+
   if (!user) return <Redirect href="/login" />;
 
-  const totalItems = groups?.reduce((a, g) => a + g.pieces_available, 0) ?? 0;
-  const totalWeight = groups?.reduce((a, g) => a + g.theoretical_weight_available_kg, 0) ?? 0;
+  const totalItems = filtered?.reduce((a, g) => a + g.pieces_available, 0) ?? 0;
+  const totalWeight = filtered?.reduce((a, g) => a + g.theoretical_weight_available_kg, 0) ?? 0;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <Header title={t("inventory")} showBack />
+
+      {grades.length > 0 ? (
+        <View style={s.chipHeader}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
+            <Pressable
+              key={ALL_KEY}
+              testID="grade-filter-all"
+              onPress={() => setSelectedGrade(ALL_KEY)}
+              style={[s.chip, selectedGrade === ALL_KEY && s.chipActive]}
+            >
+              <Text style={[s.chipTxt, selectedGrade === ALL_KEY && s.chipTxtActive]}>ALL · सभी</Text>
+            </Pressable>
+            {grades.map((g) => {
+              const label = g === NO_GRADE_KEY ? "NO GRADE" : g;
+              return (
+                <Pressable
+                  key={g}
+                  testID={`grade-filter-${g}`}
+                  onPress={() => setSelectedGrade(g)}
+                  style={[s.chip, selectedGrade === g && s.chipActive]}
+                >
+                  <Text style={[s.chipTxt, selectedGrade === g && s.chipTxtActive]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : null}
+
       <View style={s.summary}>
         <View style={s.summaryCell}>
           <Text style={s.summaryLbl}>{t("total_items")}</Text>
@@ -59,12 +104,12 @@ export default function InventoryScreen() {
         <Text style={[s.hCell, { color: colors.brand }]}>AVL</Text>
         <Text style={[s.hCell, { flex: 1.2 }]}>WT(kg)</Text>
       </View>
-      {!groups ? (
+      {!filtered ? (
         <View style={{ padding: spacing.xl }}><ActivityIndicator color={colors.brand} /></View>
       ) : (
         <FlatList
           testID="inventory-list"
-          data={groups}
+          data={filtered}
           keyExtractor={(g, i) => `${g.thickness_mm}-${g.width_mm}-${g.length_mm}-${g.grade || ""}-${i}`}
           contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
@@ -88,6 +133,13 @@ export default function InventoryScreen() {
 }
 
 const s = StyleSheet.create({
+  chipHeader: { height: 56, borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, justifyContent: "center", backgroundColor: colors.surfaceSecondary },
+  chipRow: { paddingHorizontal: spacing.md, gap: spacing.sm, alignItems: "center" },
+  chip: { height: 36, paddingHorizontal: 14, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surface, justifyContent: "center", flexShrink: 0 },
+  chipActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  chipTxt: { fontSize: 11, fontWeight: "900", color: colors.onSurface, letterSpacing: 1 },
+  chipTxtActive: { color: colors.onBrand },
+
   summary: { flexDirection: "row", padding: spacing.md, borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
   summaryCell: { flex: 1, alignItems: "center" },
   summaryDivider: { width: 1.5, backgroundColor: colors.borderStrong, marginHorizontal: spacing.sm },

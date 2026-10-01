@@ -7,6 +7,7 @@ import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
 import { toast } from "@/src/ui/Toast";
+import { ReportEmailModal } from "@/src/ui/ReportEmailModal";
 
 type Entry = {
   id: string;
@@ -53,6 +54,7 @@ export default function EntriesScreen() {
   if (!user) return <Redirect href="/login" />;
 
   const canExport = user.role === "admin" || user.role === "office";
+  const [reportOpen, setReportOpen] = useState(false);
   const exportCsv = async () => {
     try {
       const base = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -84,9 +86,14 @@ export default function EntriesScreen() {
         title={t("entries")}
         showBack
         right={canExport ? (
-          <Pressable testID="export-csv-btn" onPress={exportCsv} style={styles2.exportBtn}>
-            <Text style={styles2.exportTxt}>CSV</Text>
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: 4 }}>
+            <Pressable testID="email-report-btn" onPress={() => setReportOpen(true)} style={styles2.reportBtn}>
+              <Text style={styles2.reportTxt}>📧</Text>
+            </Pressable>
+            <Pressable testID="export-csv-btn" onPress={exportCsv} style={styles2.exportBtn}>
+              <Text style={styles2.exportTxt}>CSV</Text>
+            </Pressable>
+          </View>
         ) : undefined}
       />
       <View style={s.chipHeader}>
@@ -144,6 +151,7 @@ export default function EntriesScreen() {
           )}
         />
       )}
+      <ReportEmailModal visible={reportOpen} onClose={() => setReportOpen(false)} />
     </View>
   );
 }
@@ -178,4 +186,12 @@ const styles2 = StyleSheet.create({
     backgroundColor: colors.success,
   },
   exportTxt: { color: colors.onSuccess, fontWeight: "900", fontSize: 11, letterSpacing: 1 },
+  reportBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1.5,
+    borderColor: colors.onSurfaceInverse,
+    backgroundColor: colors.brand,
+  },
+  reportTxt: { color: colors.onBrand, fontWeight: "900", fontSize: 13 },
 });

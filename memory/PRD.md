@@ -61,8 +61,13 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 - Entry edit/soft-delete
 - Push notifications
 
-## Iteration 2 — Analytics, Export, Voice, Guardrail (shipped)
-- `GET /api/analytics/summary?days=N` — daily inward/outward (pcs + kg), today's totals, 7-day window totals, top 5 parties, top 5 brokers, pending office count — visible on home for admin & office
-- `GET /api/entries.csv[?direction=][&token=]` — 21-column CSV export, admin/office only, downloadable via browser (query token for native Linking.openURL)
-- `POST /api/voice/transcribe` — accepts audio multipart, uses Emergent OpenAI STT `gpt-4o-mini-transcribe`, returns `{text, numbers}`; frontend parses up to 3 numbers for Thickness/Width/Length (Hindi + English word-to-number)
-- Stock guardrail — `POST /api/entries/outward` blocks with 400 `INSUFFICIENT STOCK` when pieces > available (grouped by T×W×L×grade)
+## Iteration 3 — Grade Filter, Photo-OCR, Report Email, Low-Stock (shipped)
+- Inventory screen: grade filter chips (ALL · IS2062 · TEST · …) with live totals
+- Entry form: after uploading a weighment slip photo, backend `/api/vision/weight` (OpenAI `gpt-4o-mini` via Emergent LLM key) reads the NET kg and auto-fills `actual_weight`; shows raw snippet
+- Entries screen: 📧 button opens picker modal → `/api/reports/party-statement` generates a brutalist A4 PDF, stores it, emails the logged-in user a 24-hour download link via Emergent-managed Resend. Download link also opens inline.
+- `/api/settings/low-stock` (default 2 pcs, admin can PATCH) + analytics now ships `low_stock_threshold_pcs` and `low_stock[]`; home dashboard renders a red "LOW STOCK · कम स्टॉक" card tapping through to inventory
+
+21/21 new backend tests + full regression pass (62/62 total).
+
+Note: seeded demo emails (`office@steeltrack.com`) are not deliverable. For the email flow to reach a real inbox, add a user with your real email via Admin → Users; everything else works out of the box.
+

@@ -1,0 +1,51 @@
+{
+  "summary": "Backend-only testing for SteelTrack iteration 3 (4 new features). Created /app/backend/tests/test_steeltrack_iter3_features.py with 21 tests covering: (1) Low-stock in /api/analytics/summary — new low_stock_threshold_pcs field + low_stock[] item shape (thickness/width/length/grade/pieces_available/theoretical_weight_available_kg) with 0 < pcs <= threshold; (2) /api/settings/low-stock — GET works for admin/office/labour; PATCH as admin to 5.5 persists and resets to 2.0; office + labour PATCH -> 403; (3) /api/parties — admin/office return sorted (case-insensitive) deduplicated non-empty string list, labour -> 403; (4) /api/vision/weight — 400 'Provide file or slip_photo_path' when neither given, 404 'Slip photo not found' for a non-existent slip_photo_path, 400 'Image too small' for a <500-byte file (actual OCR not invoked, per spec); (5) /api/reports/party-statement — labour -> 403, non-existent party -> 404 with 'No entries for party ...', full end-to-end flow: seeded inward entry -> office patched party_name='PYTEST Party One' -> POST returns {report_id, download_url (https:// + ?token=), email_id, sent_to, entries_count>=1} -> GET /api/reports/{id}.pdf?token=... returns 200 application/pdf with %PDF- magic, no-token -> 401, bogus token -> 401, office's main login JWT (Authorization header) -> 200. Full regression on existing endpoints passes. All 21 iter_3 tests pass (21/21). Pre-existing iter_1 (25) + iter_2 (16) tests still pass in isolation (62/62); one iter_2 analytics test is order-sensitive under parallel load — see flaky_tests note.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/reports/party-statement", "issue": "Resend blocks the seeded office email 'office@steeltrack.com' with HTTP 422 'Undeliverable recipient'. The backend correctly surfaces this as 502 'Failed to send email'. For end-to-end verification the test registers a Resend-deliverable office user (delivered@resend.dev). Consider changing the seeded office/admin/labour emails to Resend-verified addresses OR adding a dev override; otherwise the feature will fail for any human smoke-test using the default seeded office account."},
+      {"endpoint": "GET /api/parties", "issue": "No pagination/limit; distinct() over the full entries collection. Fine at current volume; worth adding a cap or indexed projection if entries grow."},
+      {"endpoint": "GET /api/reports/{id}.pdf", "issue": "Downloads over 'inline' Content-Disposition; browsers may preview rather than download. Minor UX detail. Signed JWT is passed in query string (same mild concern as /entries.csv?token=... — appears in access logs)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter3_features.py",
+    "/app/backend/tests/test_steeltrack_new_features.py",
+    "/app/backend/tests/test_steeltrack_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results_iter3.xml",
+    "/app/test_reports/pytest/pytest_results_iter3_full.xml"
+  ],
+  "action_items": [
+    "No functional fixes required — all 13 review-request bullets pass, and the Resend integration is confirmed working against a deliverable recipient (202 Accepted logged in /var/log/supervisor/backend.err.log).",
+    "Decide whether to update the seeded office/admin/labour emails from *@steeltrack.com to Resend-verified / delivered@resend.dev-style addresses, so a manual demo of the 'email PDF' feature does not fail at Resend's deliverability check.",
+    "(Carried from iter_2) server.py is 1370 lines — split into routers (auth, entries, inventory, analytics, voice, vision, reports, settings) before next iteration.",
+    "(Carried from iter_1/iter_2) Analytics endpoint has no RBAC — any logged-in user can see totals + low_stock; spec allows this but main agent should confirm."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from 906 to 1370 lines after this iteration (vision + reports + email + settings all inline). The 700-line split threshold is now well exceeded — refactor to routers is strongly recommended.",
+    "/api/reports/party-statement calls _assert_safe_email (anti-phishing anchor check) with EXPO_PUBLIC_BACKEND_URL (fallback hard-codes 'https://weight-check-30.preview.emergentagent.com'). Keep the fallback in sync with .env — otherwise the download link in the email could point to a stale host.",
+    "download_report accepts the signed report-scoped token OR a full admin/office login JWT. The token-scope check '(rep_id_scope is None or rep_id_scope == report_id)' correctly rejects a signed token issued for ANOTHER report (verified by code reading).",
+    "/api/vision/weight uses emergentintegrations LlmChat with gpt-4o-mini and 500-byte minimum guard; sync _sync_get_object is correctly off-loaded via run_in_threadpool.",
+    "/api/parties uses db.entries.distinct('party_name') — fine; return type is List[str] (JSON array of strings), matches spec.",
+    "PATCH /api/settings/low-stock updates in a single $set upsert — good, idempotent and race-safe."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter3_features.py (created, 21 tests)"
+  ],
+  "success_rate": {"backend": "100% (21/21 iter_3; 62/62 in isolation across all iterations)", "frontend": "N/A (not requested)"},
+  "seed_data_creation": "Tests create TEST_LS_*, TEST_RPT_*, TEST_REG_* grades and a few inward/outward entries, one entry patched with party_name='PYTEST Party One'. One admin-registered office user 'delivered@resend.dev' (safe Resend test inbox) is created on first run and reused on subsequent runs. No cleanup — safe on isolated preview DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "flaky_tests": [
+    {"test": "tests/test_steeltrack_new_features.py::TestAnalyticsSummary::test_analytics_reflects_new_inward", "issue": "Passes in isolation and in iter_2's own run (16/16) but can fail under parallel-worker load because 'totals_today' is read before, then compared to after; other parallel inwards inflate the delta. Not an application bug — tighten the test by filtering on created_by in a future iteration."}
+  ],
+  "context_for_next_testing_agent": "Public URL from EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env. Seeded users unchanged (admin/office/labour@steeltrack.com). IMPORTANT for anything that triggers Resend: Resend's provider blocks 'office@steeltrack.com' as 'Undeliverable recipient' (HTTP 422), which the backend surfaces as 502. Use 'delivered@resend.dev' (register via POST /api/auth/register as admin) for end-to-end email tests. The iter_3 report flow test already does this; subsequent runs of the test idempotently re-use the account (accepts 400 'Email already exists'). PDF download accepts BOTH the signed ?token= (JWT with report_id claim, 24h) AND a full admin/office login JWT. For next iterations, server.py (1370 lines) really should be split.",
+  "rca_of_issue": "First run of the full flow test failed with 502. Root cause: Resend returns 422 'Undeliverable recipient' for the seeded office@steeltrack.com — the integrations.emergentagent.com /api/v1/email/send proxy forwards Resend's deliverability guard. The backend's _send_email catches httpx.HTTPStatusError and re-raises HTTPException(502). Fix (test-side): register a new office user with 'delivered@resend.dev' (a Resend-guaranteed deliverable mailbox) and run the flow as that user. Reproduction: POST /api/reports/party-statement with any party_name that has >=1 entry while logged in as office@steeltrack.com — observe 502 in response and 'Email send failed: 422 Undeliverable recipient' in backend logs."
+}
