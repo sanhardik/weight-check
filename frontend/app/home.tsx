@@ -18,7 +18,7 @@ type Analytics = {
   top_parties: { name: string; pieces: number; weight: number; count: number }[];
   top_brokers: { name: string; pieces: number; weight: number; count: number }[];
   low_stock_threshold_pcs: number;
-  low_stock: { thickness_mm: number; width_mm: number; length_mm: number; grade: string | null; pieces_available: number; theoretical_weight_available_kg: number }[];
+  low_stock: { thickness_mm: number; width_mm: number; length_mm: number; grade: string | null; pieces_available: number; theoretical_weight_available_kg: number; avg_weekly_pcs: number; weeks_remaining: number | null; suggested_reorder_pcs: number }[];
 };
 
 export default function Home() {
@@ -116,11 +116,22 @@ export default function Home() {
                     </View>
                     {analytics.low_stock.slice(0, 4).map((ls, i) => (
                       <View key={`${ls.thickness_mm}-${ls.width_mm}-${ls.length_mm}-${ls.grade}-${i}`} style={s.lowStockRow} testID={`low-stock-${i}`}>
-                        <Text style={s.lowStockDim}>
-                          {ls.thickness_mm}×{ls.width_mm}×{ls.length_mm}
-                          {ls.grade ? ` · ${ls.grade}` : ""}
-                        </Text>
-                        <Text style={s.lowStockPcs}>{ls.pieces_available} PCS</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.lowStockDim}>
+                            {ls.thickness_mm}×{ls.width_mm}×{ls.length_mm}
+                            {ls.grade ? ` · ${ls.grade}` : ""}
+                          </Text>
+                          {ls.avg_weekly_pcs > 0 ? (
+                            <Text style={s.lowStockConsume}>
+                              {ls.avg_weekly_pcs} PCS/WK
+                              {ls.weeks_remaining != null ? ` · ${ls.weeks_remaining}WK LEFT` : ""}
+                              {ls.suggested_reorder_pcs > 0 ? ` · ORDER ${ls.suggested_reorder_pcs}` : ""}
+                            </Text>
+                          ) : (
+                            <Text style={s.lowStockConsume}>NO RECENT OUTWARD · REORDER {ls.suggested_reorder_pcs}</Text>
+                          )}
+                        </View>
+                        <Text style={s.lowStockPcs}>{ls.pieces_available}</Text>
                       </View>
                     ))}
                     {analytics.low_stock.length > 4 ? (
@@ -228,7 +239,8 @@ const s = StyleSheet.create({
   lowStockHint: { fontSize: 10, fontWeight: "900", letterSpacing: 1, color: colors.muted, fontFamily: "Courier" },
   lowStockRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider },
   lowStockDim: { flex: 1, fontSize: 13, fontWeight: "900", color: colors.onSurface, fontFamily: "Courier" },
-  lowStockPcs: { fontSize: 13, fontWeight: "900", color: colors.error, fontFamily: "Courier" },
+  lowStockConsume: { fontSize: 10, color: colors.muted, fontWeight: "900", letterSpacing: 1, fontFamily: "Courier", marginTop: 2 },
+  lowStockPcs: { fontSize: 20, fontWeight: "900", color: colors.error, fontFamily: "Courier", marginLeft: spacing.sm },
   lowStockMore: { fontSize: 10, fontWeight: "900", color: colors.muted, letterSpacing: 1, marginTop: 6 },
   sectionTitle: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: spacing.xs },
   topRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.divider, gap: spacing.sm },

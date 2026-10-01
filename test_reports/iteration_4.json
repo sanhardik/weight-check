@@ -1,0 +1,52 @@
+{
+  "summary": "Backend-only testing for SteelTrack iteration 4 (reorder suggestions, field-level history, role-based rate visibility). Created /app/backend/tests/test_steeltrack_iter4_features.py with 10 tests across 3 classes. All 10 iter_4 tests PASS. Full regression (iter_1 + iter_2 + iter_3 + iter_4) = 71/72 pass; the only failure is the already-flagged iter_2 flaky test TestAnalyticsSummary::test_analytics_reflects_new_inward (parallel-worker inward inflation — not a product bug, documented in iter_3). Coverage: (A) Analytics low_stock items include avg_weekly_pcs, weeks_remaining, suggested_reorder_pcs; (A1) zero-outward group => avg_weekly_pcs=0, weeks_remaining=None, suggested_reorder_pcs>=0; (A2) inward=5 + outward=4 in 28d, available=1 => avg_weekly_pcs==1.0 and weeks_remaining==1.0; (A3) low_stock sorted by weeks_remaining ascending, nulls last. (B) PATCH /entries/{id}/office appends one history item per changed tracked field (invoice_no, party_name, rate, payment_terms, office_remarks) with full shape {field, old, new, by, by_name, by_role, at}; (B1) unchanged fields NOT pushed (re-sending same values leaves history untouched); (B2) three sequential PATCHes stacking party_name produce 3 chronological history rows with correct old→new chains; (B3) history field present (empty by default) on both GET /entries and GET /entries/{id}. (C) Labour's GET /entries/{id} returns rate=null even when office set rate=123.45 — admin+office re-read still returns 123.45 (DB untouched); (C1) labour's GET /entries list strips rate on every item; (C2) labour's own POST /entries/inward response has rate=null.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/entries (labour)", "issue": "Rate hiding is applied in _enrich_entry via mutation; CSV export (/api/entries.csv) is admin/office-only so unaffected, but if labour ever gets export access the CSV writer must also honour role hiding. Noted for future-proofing only."},
+      {"endpoint": "PATCH /api/entries/{id}/office", "issue": "history.at is serialised as a native datetime by FastAPI; downstream JSON contains an ISO-8601 string with 'T' separator — tests pass but value is timezone-aware UTC. If frontend parses with Date() this is fine; worth documenting the format in API docs."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter4_features.py",
+    "/app/backend/tests/test_steeltrack_iter3_features.py",
+    "/app/backend/tests/test_steeltrack_new_features.py",
+    "/app/backend/tests/test_steeltrack_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results_iter4.xml",
+    "/app/test_reports/pytest/pytest_results_iter4_full.xml"
+  ],
+  "action_items": [
+    "No functional fixes required for iter_4 — all 9 review-request bullets pass.",
+    "(Carried from iter_2/iter_3) server.py is now ~1425 lines — split into routers (auth, entries, inventory, analytics, voice, vision, reports, settings) before next iteration; the 700-line soft cap is well exceeded.",
+    "(Carried) Analytics endpoint has no RBAC — any logged-in user can view totals + low_stock + reorder suggestions. If reorder/weekly-consumption data is considered pricing-adjacent, confirm labour should see it. (Spec for iter_4 does not require hiding it, so no change made.)",
+    "(Carried) Decide whether to update seeded office/admin/labour emails from *@steeltrack.com to Resend-deliverable addresses for manual demos of the party-statement email flow.",
+    "Optional: harden iter_2 flaky test TestAnalyticsSummary::test_analytics_reflects_new_inward by filtering delta on created_by (avoid cross-worker inflation)."
+  ],
+  "critical_code_review_comments": [
+    "History push is correctly guarded: _OFFICE_HISTORY_FIELDS iterated only over keys present in `update` (which already excludes Nones via dict-comp on body.dict()), and old_val != new_val short-circuits identical writes — matches 'unchanged fields must NOT be pushed'.",
+    "Rate hiding is centralised in _enrich_entry(e, viewer) which runs on list, detail, create-inward, create-outward and patch responses — single source of truth, so adding new entry endpoints must keep calling it.",
+    "Analytics weekly average uses pcs/4.0 over a 28-day window. For a group with outward=4 in 28d: weekly=1.0 — matches spec. For avail=1 and weekly=1.0, weeks_remaining=1.0 — matches spec. Correct.",
+    "Low-stock sort key: `(weeks_remaining or 999, pieces_available)` is a simple nulls-last trick. It works because weeks_remaining values for real groups will realistically be < 999. Prefer a sentinel like math.inf or an explicit (is_none, value) tuple for robustness.",
+    "server.py has crossed 1400 lines. Split threshold (700) is 2x exceeded. Still strongly recommended to modularise.",
+    "No new RBAC bypass surface introduced; office+admin remain the only roles permitted on PATCH /entries/{id}/office."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter4_features.py (created, 10 tests)"
+  ],
+  "success_rate": {"backend": "100% iter_4 (10/10); 98.6% regression (71/72, 1 known-flaky iter_2 test unrelated to iter_4)", "frontend": "N/A (not requested)"},
+  "seed_data_creation": "Tests create short-lived inward/outward entries with ITER4_* grades for isolation. No cleanup — safe on isolated preview DB. No new users created.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "flaky_tests": [
+    {"test": "tests/test_steeltrack_new_features.py::TestAnalyticsSummary::test_analytics_reflects_new_inward", "issue": "Carries over from iter_3 report. Delta assertion ~157 kg vs other parallel workers' inwards inflating totals (saw 163.28 this run). Not a product bug — tighten by filtering on created_by in future."}
+  ],
+  "context_for_next_testing_agent": "Public URL from EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env. Seeded users unchanged. iter_4 adds field-level history on PATCH /entries/{id}/office — history[] is cumulative, chronological, one row per changed tracked field (invoice_no, party_name, rate, payment_terms, office_remarks). Labour viewing any entry sees rate=null (applied in _enrich_entry); admin/office still see real rate; DB value is NOT altered. Analytics low_stock items now carry avg_weekly_pcs (pcs over 28d / 4), weeks_remaining (available/weekly, null if weekly==0), suggested_reorder_pcs. low_stock is sorted by weeks_remaining asc, nulls last. server.py is now ~1425 lines; next iteration should split it. For email-triggering tests continue to use delivered@resend.dev (resend rejects *@steeltrack.com).",
+  "rca_of_issue": "N/A — no new bugs. The single regression failure (iter_2 analytics delta) is a known flaky test due to pytest-xdist parallelism, not a product defect; already documented in iter_3 report."
+}

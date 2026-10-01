@@ -139,11 +139,33 @@ export default function EntryDetail() {
             <>
               <View style={s.kv}><Text style={s.k}>{t("invoice_no")}</Text><Text style={s.v}>{entry.invoice_no || "—"}</Text></View>
               <View style={s.kv}><Text style={s.k}>{t("party_name")}</Text><Text style={s.v}>{entry.party_name || "—"}</Text></View>
-              <View style={s.kv}><Text style={s.k}>{t("rate")}</Text><Text style={s.v}>{entry.rate ?? "—"}</Text></View>
+              {user.role !== "labour" ? (
+                <View style={s.kv}><Text style={s.k}>{t("rate")}</Text><Text style={s.v}>{entry.rate ?? "—"}</Text></View>
+              ) : null}
               <View style={s.kv}><Text style={s.k}>{t("payment_terms")}</Text><Text style={s.v}>{entry.payment_terms || "—"}</Text></View>
             </>
           )}
         </View>
+
+        {canEdit && entry.history && entry.history.length > 0 ? (
+          <View style={s.historyBlock} testID="history-block">
+            <Text style={s.secTitle}>EDIT HISTORY · पिछले बदलाव</Text>
+            {entry.history.slice().reverse().map((h: any, i: number) => (
+              <View key={i} style={s.historyRow} testID={`history-row-${i}`}>
+                <View style={s.historyTop}>
+                  <Text style={s.historyField}>{String(h.field).toUpperCase()}</Text>
+                  <Text style={s.historyDate}>{new Date(h.at).toLocaleString()}</Text>
+                </View>
+                <View style={s.historyDiff}>
+                  <Text style={s.historyOld} numberOfLines={1}>WAS: {h.old === null || h.old === undefined || h.old === "" ? "—" : String(h.old)}</Text>
+                  <Text style={s.historyArrow}>→</Text>
+                  <Text style={s.historyNew} numberOfLines={1}>NOW: {h.new === null || h.new === undefined || h.new === "" ? "—" : String(h.new)}</Text>
+                </View>
+                <Text style={s.historyBy}>{h.by_name || "User"} · {String(h.by_role || "").toUpperCase()}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -160,4 +182,15 @@ const s = StyleSheet.create({
   slip: { width: "100%", aspectRatio: 1.3, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
   secTitle: { fontSize: 12, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginTop: spacing.lg, marginBottom: spacing.sm },
   officeBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.brand, backgroundColor: colors.brandTertiary },
+
+  historyBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
+  historyRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  historyTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  historyField: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.onSurface },
+  historyDate: { fontSize: 10, color: colors.muted, fontFamily: "Courier" },
+  historyDiff: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" },
+  historyOld: { fontSize: 12, color: colors.muted, textDecorationLine: "line-through", fontFamily: "Courier", flexShrink: 1 },
+  historyArrow: { fontSize: 14, fontWeight: "900", color: colors.brand },
+  historyNew: { fontSize: 12, color: colors.onSurface, fontFamily: "Courier", fontWeight: "900", flexShrink: 1 },
+  historyBy: { fontSize: 10, color: colors.muted, marginTop: 4, letterSpacing: 1 },
 });

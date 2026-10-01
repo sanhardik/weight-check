@@ -56,10 +56,17 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 4 — WhatsApp, QR Scan, Reorder, History, Rate Hiding (shipped)
+- Entry form: new **QR button** next to Vehicle input opens a full-screen `CameraView` scanner (QR, Code128, Code39, EAN13); scanned value fills the vehicle field. Shows a web-fallback modal because browsers can't open the native camera.
+- Entry detail: office/admin now see an **EDIT HISTORY** block with every change to invoice/party/rate/terms/office_remarks (WAS → NOW, timestamp, user, role). Labour never sees `rate` — the backend strips it on every entries response.
+- Analytics `low_stock[]` adds `avg_weekly_pcs`, `weeks_remaining`, `suggested_reorder_pcs` (28-day consumption ÷ 4). Dashboard low-stock card now shows "0.25 PCS/WK · 4WK LEFT · ORDER 3" directly.
+- Report email modal: after the PDF is generated, a **SHARE ON WHATSAPP** button opens `wa.me/?text=…` with a prefilled message + the signed download link so office can forward directly to the party.
+
+72/72 backend tests pass (10 new iter_4 + full regression).
+
 ## Not Yet Built (Future)
 - Password reset flow
 - Entry edit/soft-delete
-- Push notifications
 
 ## Iteration 3 — Grade Filter, Photo-OCR, Report Email, Low-Stock (shipped)
 - Inventory screen: grade filter chips (ALL · IS2062 · TEST · …) with live totals

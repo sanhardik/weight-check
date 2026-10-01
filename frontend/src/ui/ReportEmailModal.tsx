@@ -52,6 +52,32 @@ export function ReportEmailModal({ visible, onClose }: Props) {
     }
   };
 
+  const shareWhatsApp = async () => {
+    if (!result?.download_url || !picked) return;
+    const msg =
+      `Hi,\n\nHere is the SteelTrack statement for *${picked}* (${result.entries_count} entries).\n\n` +
+      `Download PDF: ${result.download_url}\n\n` +
+      `Link opens for 24 hours. — Sent via SteelTrack.`;
+    const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    try {
+      if (Platform.OS === "web") {
+        const win = (globalThis as any).window;
+        if (win?.open) win.open(url, "_blank");
+        else await Linking.openURL(url);
+      } else {
+        const supported = await Linking.canOpenURL(url);
+        if (!supported) {
+          toast("WhatsApp not installed", "error");
+          return;
+        }
+        await Linking.openURL(url);
+      }
+      toast("Opening WhatsApp...", "success");
+    } catch (e: any) {
+      toast(e.message || "Could not open WhatsApp", "error");
+    }
+  };
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={s.backdrop}>
@@ -71,7 +97,8 @@ export function ReportEmailModal({ visible, onClose }: Props) {
                 <Text style={s.successDetail}>{result.entries_count} entries · PDF attached</Text>
               </View>
               <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
-                <BButton testID="open-pdf-btn" label="OPEN PDF NOW" onPress={openPdf} size="lg" />
+                <BButton testID="whatsapp-share-btn" label="SHARE ON WHATSAPP" onPress={shareWhatsApp} size="lg" variant="primary" />
+                <BButton testID="open-pdf-btn" label="OPEN PDF" onPress={openPdf} variant="secondary" />
                 <BButton label="DONE" variant="ghost" onPress={onClose} />
               </View>
             </View>

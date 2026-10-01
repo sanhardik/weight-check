@@ -146,6 +146,7 @@ class EntryOut(BaseModel):
     created_at: datetime
     office_updated_by: Optional[str] = None
     office_updated_at: Optional[datetime] = None
+    history: List[dict] = Field(default_factory=list)
 
 
 class InventoryGroup(BaseModel):
@@ -418,11 +419,24 @@ async def get_file(path: str, token: Optional[str] = Query(None), cred: HTTPAuth
 
 
 # ---------- Entries ----------
-async def _enrich_entry(e: dict) -> dict:
+async def _enrich_entry(e: dict, viewer: Optional[dict] = None) -> dict:
     if "created_by" in e:
         u = await db.users.find_one({"id": e["created_by"]}, {"_id": 0, "name": 1})
         e["created_by_name"] = u["name"] if u else "Unknown"
+    # Role-based rate visibility: labour never sees pricing
+    if viewer and viewer.get("role") == "labour":
+        e["rate"] = None
     return e
+
+
+# Fields that office/admin can edit and that should be tracked in history
+_OFFICE_HISTORY_FIELDS = ("invoice_no", "party_name", "rate", "payment_terms", "office_remarks")
+
+
+async def _push_history(entry_id: str, changes: list) -> None:
+    if not changes:
+        return
+    await db.entries.update_one({"id": entry_id}, {"$push": {"history": {"$each": changes}}})
 
 
 @api_router.post("/entries/inward", response_model=EntryOut)
@@ -450,7 +464,7 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
         "created_at": now_utc(),
     }
     await db.entries.insert_one(doc.copy())
-    doc = await _enrich_entry(doc)
+    doc = await _enrich_entry(doc, user)
     return EntryOut(**doc)
 
 
@@ -505,7 +519,7 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
         "created_at": now_utc(),
     }
     await db.entries.insert_one(doc.copy())
-    doc = await _enrich_entry(doc)
+    doc = await _enrich_entry(doc, user)
     return EntryOut(**doc)
 
 
@@ -521,7 +535,7 @@ async def list_entries(
     cur = db.entries.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     out = []
     async for e in cur:
-        e = await _enrich_entry(e)
+        e = await _enrich_entry(e, user)
         out.append(EntryOut(**e))
     return out
 
@@ -531,7 +545,7 @@ async def get_entry(entry_id: str, user: dict = Depends(current_user)):
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
-    e = await _enrich_entry(e)
+    e = await _enrich_entry(e, user)
     return EntryOut(**e)
 
 
@@ -545,11 +559,31 @@ async def update_office_details(
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
     update = {k: v for k, v in body.dict().items() if v is not None}
+
+    # Build history entries for every tracked field that actually changes
+    changes = []
+    for field in _OFFICE_HISTORY_FIELDS:
+        if field in update:
+            old_val = e.get(field)
+            new_val = update[field]
+            if old_val != new_val:
+                changes.append({
+                    "field": field,
+                    "old": old_val,
+                    "new": new_val,
+                    "by": user["id"],
+                    "by_name": user.get("name"),
+                    "by_role": user.get("role"),
+                    "at": now_utc(),
+                })
+
     update["office_updated_by"] = user["id"]
     update["office_updated_at"] = now_utc()
     await db.entries.update_one({"id": entry_id}, {"$set": update})
+    if changes:
+        await _push_history(entry_id, changes)
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
-    e = await _enrich_entry(e)
+    e = await _enrich_entry(e, user)
     return EntryOut(**e)
 
 
@@ -703,7 +737,7 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     pending = await db.entries.count_documents({"invoice_no": {"$in": [None, ""]}})
     total_entries = await db.entries.count_documents({})
 
-    # Low-stock groups (<= threshold, >0 available)
+    # Low-stock groups (<= threshold, >0 available) + reorder suggestion
     threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
     stock_pipe = [
         {"$group": {
@@ -712,17 +746,38 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
             "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
         }},
     ]
+
+    # 28-day consumption for weekly average
+    consumption_cutoff = now_utc() - timedelta(days=28)
+    consumption_pipe = [
+        {"$match": {"direction": "outward", "created_at": {"$gte": consumption_cutoff}}},
+        {"$group": {
+            "_id": {"t": "$thickness_mm", "w": "$width_mm", "l": "$length_mm", "g": "$grade"},
+            "pcs": {"$sum": "$pieces"},
+        }},
+    ]
+    consumption_map: dict = {}
+    async for c in db.entries.aggregate(consumption_pipe):
+        key = (c["_id"]["t"], c["_id"]["w"], c["_id"]["l"], c["_id"].get("g"))
+        consumption_map[key] = float(c["pcs"]) / 4.0  # per week
+
     low_stock = []
     async for g in db.entries.aggregate(stock_pipe):
         avail = float(g["in"]) - float(g["out"])
         if 0 < avail <= threshold:
             t = g["_id"]["t"]; w = g["_id"]["w"]; l = g["_id"]["l"]; grade = g["_id"].get("g")
+            weekly = round(consumption_map.get((t, w, l, grade), 0.0), 2)
+            weeks_remaining: Optional[float] = round(avail / weekly, 1) if weekly > 0 else None
+            reorder_qty = round(max(threshold * 2, weekly * 2) - avail, 2) if weekly > 0 else round(max(threshold * 2 - avail, 0.0), 2)
             low_stock.append({
                 "thickness_mm": t, "width_mm": w, "length_mm": l, "grade": grade,
                 "pieces_available": round(avail, 3),
                 "theoretical_weight_available_kg": calc_theoretical_weight(t, w, l, avail),
+                "avg_weekly_pcs": weekly,
+                "weeks_remaining": weeks_remaining,
+                "suggested_reorder_pcs": reorder_qty,
             })
-    low_stock.sort(key=lambda x: x["pieces_available"])
+    low_stock.sort(key=lambda x: (x.get("weeks_remaining") if x.get("weeks_remaining") is not None else 999, x["pieces_available"]))
 
     return {
         "window_days": days,

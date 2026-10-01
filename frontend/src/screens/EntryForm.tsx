@@ -11,6 +11,7 @@ import { BInput } from "@/src/ui/BInput";
 import { BButton } from "@/src/ui/BButton";
 import { toast } from "@/src/ui/Toast";
 import { VoiceInput } from "@/src/ui/VoiceInput";
+import { QRScanner } from "@/src/ui/QRScanner";
 
 type Props = { direction: "inward" | "outward"; prefill?: any };
 
@@ -35,6 +36,7 @@ export function EntryForm({ direction, prefill }: Props) {
   const [saving, setSaving] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrText, setOcrText] = useState<string>("");
+  const [qrOpen, setQrOpen] = useState(false);
 
   const nf = (v: string) => parseFloat(v) || 0;
   const theoretical = nf(thickness) * nf(width) * nf(length) * nf(pieces) * 7.85e-6;
@@ -163,7 +165,28 @@ export function EntryForm({ direction, prefill }: Props) {
         <BInput testID="input-grade" label={t("grade")} value={grade} onChangeText={setGrade} />
 
         <Text style={s.section}>2. VEHICLE / वाहन</Text>
-        <BInput testID="input-vehicle" label={t("vehicle")} value={vehicle} onChangeText={setVehicle} autoCapitalize="characters" placeholder="MH12 AB 1234" />
+        <View style={s.vehicleRow}>
+          <View style={{ flex: 1 }}>
+            <BInput testID="input-vehicle" label={t("vehicle")} value={vehicle} onChangeText={setVehicle} autoCapitalize="characters" placeholder="MH12 AB 1234" />
+          </View>
+          <Pressable
+            testID="scan-qr-btn"
+            onPress={() => setQrOpen(true)}
+            style={({ pressed }) => [s.qrBtn, { opacity: pressed ? 0.85 : 1 }]}
+          >
+            <Text style={s.qrIcon}>⧈</Text>
+            <Text style={s.qrLbl}>QR</Text>
+          </Pressable>
+        </View>
+        <QRScanner
+          visible={qrOpen}
+          onClose={() => setQrOpen(false)}
+          onScanned={(data) => {
+            setVehicle(data.toUpperCase().slice(0, 32));
+            toast(`QR: ${data}`, "success");
+            setQrOpen(false);
+          }}
+        />
         {direction === "outward" && (
           <BInput testID="input-broker" label={t("broker")} value={broker} onChangeText={setBroker} />
         )}
@@ -260,4 +283,17 @@ const s = StyleSheet.create({
     marginBottom: spacing.md,
   },
   ocrTxt: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 11, letterSpacing: 1, flexShrink: 1 },
+  vehicleRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-end", marginBottom: 0 },
+  qrBtn: {
+    width: 72,
+    height: 52,
+    borderWidth: 1.5,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceInverse,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.md,
+  },
+  qrIcon: { color: colors.onSurfaceInverse, fontSize: 22, fontWeight: "900" },
+  qrLbl: { color: colors.onSurfaceInverse, fontSize: 10, fontWeight: "900", letterSpacing: 2 },
 });
