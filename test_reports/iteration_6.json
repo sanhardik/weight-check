@@ -1,0 +1,42 @@
+{
+  "summary": "Focused re-verification of the iter_5 critical bug: GET /api/reports/{report_id}.pdf 500/KeyError 'party_name' for invoice-kind reports. Fix at server.py:1605 (`rep.get('party_name') or rep.get('kind') or 'steeltrack'`) is now VERIFIED. Ran only the focused slice requested: TestInvoicePdf (iter_5, 3 existing + 1 added) and TestReportsStatement (iter_3 party-statement, 6 tests). Result: 10/10 PASS. Full flow (office PATCHes /entries/{id}/office with invoice_no+party_name+rate → POST /entries/{id}/invoice-pdf → GET download_url) returns 200 application/pdf with %PDF- body — no 500. Download also works via main JWT (Authorization: Bearer) in addition to signed ?token=. Content-Disposition filename contains a safe fallback ('invoice' from rep['kind']) when party_name is not stored on the report doc, confirming no KeyError. Party-statement flow continues to work and still embeds party_name in the Content-Disposition filename via the same `rep.get('party_name')` branch. No regression in party-statement download. The iter_5 iteration_5 blocker is resolved.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/reports/{report_id}.pdf", "issue": "Filename template is now safe but still contains the literal '-statement-' infix for ALL report kinds, so invoice downloads come out as 'invoice-statement-<id>.pdf' which reads oddly. Cosmetic only; recommend branching on rep.get('kind') (e.g. 'invoice-<id>.pdf' vs '<party>-statement-<id>.pdf') for cleaner UX. Not blocking."},
+      {"endpoint": "POST /api/entries/{id}/invoice-pdf", "issue": "(Carried from iter_5) Still does NOT persist invoice_no / party_name on the db.reports doc. The download now works via fallback, but admin / audit queries can't filter invoice reports by party_name or invoice number. Suggest storing those fields in the insert_one at server.py ~1772 so filenames can also stay informative."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter5_features.py",
+    "/app/backend/tests/test_steeltrack_iter3_features.py",
+    "/app/test_reports/pytest/pytest_results_iter6.xml",
+    "/app/test_reports/pytest/pytest_results_iter6_partystmt.xml"
+  ],
+  "action_items": [
+    "(Optional cosmetic) server.py:1605 — branch filename on rep.get('kind'): 'invoice-<id>.pdf' for kind=='invoice' vs '<party>-statement-<id>.pdf' for party-statement reports. Current string reads 'invoice-statement-xxxxx.pdf' which works but is awkward.",
+    "(Carried) Persist invoice_no + party_name on db.reports when kind='invoice' (server.py ~1772) for admin queries and better filenames.",
+    "(Carried from iter_5) Migrate /app/backend/tests/test_steeltrack_iter3_features.py::TestParties::test_parties_sorted_deduplicated to the new object-shape /parties contract (not retested here per scoped request).",
+    "(Carried) server.py is 1832 lines — still 2.6x over the 700-line soft cap. Modularise into routers before adding new features."
+  ],
+  "critical_code_review_comments": [
+    "Fix verified at /app/backend/server.py:1605 — Content-Disposition now uses `rep.get('party_name') or rep.get('kind') or 'steeltrack'` which eliminates the KeyError for invoice reports (where party_name is not stored). Fallback chain is correct and safe.",
+    "RBAC path is unchanged: owner-of-report (via signed ?token= scoped to report_id) OR admin/office with main JWT both reach the response branch — both paths now succeed for invoice reports (newly added regression test test_invoice_pdf_download_via_main_jwt_also_works confirms the Authorization-header path).",
+    "No change needed to POST /entries/{id}/invoice-pdf for correctness — the fix is pure read-side. However persisting party_name there would make filenames informative (currently they fall back to 'invoice')."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter5_features.py (added test_invoice_pdf_download_via_main_jwt_also_works + Content-Disposition assertion in test_invoice_pdf_happy_path_and_download)"
+  ],
+  "success_rate": {"backend": "100% (10/10 focused tests: 4 TestInvoicePdf + 6 TestReportsStatement)", "frontend": "N/A (backend-only re-verification)"},
+  "seed_data_creation": "Each invoice test creates its own isolated inward+outward pair (unique grade ITER5_INV_<hex>, offset dims) + a unique PYTEST_INV_<hex> party. No cleanup required (DB-isolated preview). No new users.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter_5 KeyError 'party_name' bug (server.py:1605) is FIXED and verified in iteration_6. The fix is `rep.get('party_name') or rep.get('kind') or 'steeltrack'`. Full regression (iter_1..iter_5) was NOT re-run per scoped request; only TestInvoicePdf (iter_5) + TestReportsStatement (iter_3) ran — both 100% pass. Open follow-ups unrelated to this fix: (a) stale iter_3 TestParties::test_parties_sorted_deduplicated still expects List[str] but iter_5 returns List[dict] — needs migration by main agent; (b) iter_2 TestAnalyticsSummary::test_analytics_reflects_new_inward remains flaky under pytest-xdist; (c) server.py modularisation overdue (1832 lines). Public URL from EXPO_BACKEND_URL / EXPO_PUBLIC_BACKEND_URL. Seeded users unchanged (admin/office/labour @steeltrack.com).",
+  "rca_of_issue": "ORIGINAL: GET /api/reports/{id}.pdf 500 KeyError 'party_name' when kind='invoice'. ROOT CAUSE: download_report built the Content-Disposition filename as rep['party_name'], but POST /entries/{id}/invoice-pdf inserts only {id,path,owner_id,entry_id,kind:'invoice',created_at} into db.reports — party_name is only persisted by party-statement. FIX APPLIED (confirmed in server.py:1605): `f'inline; filename=\"{rep.get(\"party_name\") or rep.get(\"kind\") or \"steeltrack\"}-statement-{report_id[:8]}.pdf\"'`. VERIFICATION: 10 focused tests pass; download returns 200/application/pdf with %PDF- body and filename containing 'invoice' fallback for invoice reports or the actual party name for party-statement reports."
+}

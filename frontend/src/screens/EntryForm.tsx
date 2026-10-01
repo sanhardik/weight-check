@@ -26,6 +26,9 @@ export function EntryForm({ direction, prefill }: Props) {
   const [pieces, setPieces] = useState("");
   const [grade, setGrade] = useState(prefill?.grade ?? "");
   const [vehicle, setVehicle] = useState("");
+  const [driverName, setDriverName] = useState("");
+  const [driverPhone, setDriverPhone] = useState("");
+  const [vehicleHint, setVehicleHint] = useState<string | null>(null);
   const [broker, setBroker] = useState("");
   const [actualWeight, setActualWeight] = useState("");
   const [remarks, setRemarks] = useState("");
@@ -44,6 +47,26 @@ export function EntryForm({ direction, prefill }: Props) {
     ? Math.abs(parseFloat(actualWeight) - theoretical) / theoretical * 100
     : null;
   const flagged = varianceRaw !== null && varianceRaw > 0.2;
+
+  const lookupVehicle = useCallback(async (plate: string) => {
+    const trimmed = (plate || "").trim().toUpperCase();
+    if (!trimmed || trimmed.length < 4) {
+      setVehicleHint(null);
+      return;
+    }
+    try {
+      const v = await apiFetch(`/vehicles/${encodeURIComponent(trimmed)}`, {}, token);
+      if (v?.last_driver || v?.last_phone) {
+        setVehicleHint(`Last: ${v.last_driver || "—"}${v.last_phone ? " · " + v.last_phone : ""}`);
+        if (!driverName && v.last_driver) setDriverName(v.last_driver);
+        if (!driverPhone && v.last_phone) setDriverPhone(v.last_phone);
+      } else {
+        setVehicleHint(null);
+      }
+    } catch {
+      setVehicleHint(null);
+    }
+  }, [token, driverName, driverPhone]);
 
   const pickPhoto = async (fromCamera: boolean) => {
     try {
@@ -119,6 +142,8 @@ export function EntryForm({ direction, prefill }: Props) {
         pieces: parseFloat(pieces),
         grade: grade || null,
         vehicle_number: vehicle.toUpperCase(),
+        driver_name: driverName || null,
+        driver_phone: driverPhone || null,
         actual_weight_kg: actualWeight ? parseFloat(actualWeight) : null,
         slip_photo_path: photoPath,
         remarks: remarks || null,
@@ -167,7 +192,15 @@ export function EntryForm({ direction, prefill }: Props) {
         <Text style={s.section}>2. VEHICLE / वाहन</Text>
         <View style={s.vehicleRow}>
           <View style={{ flex: 1 }}>
-            <BInput testID="input-vehicle" label={t("vehicle")} value={vehicle} onChangeText={setVehicle} autoCapitalize="characters" placeholder="MH12 AB 1234" />
+            <BInput
+              testID="input-vehicle"
+              label={t("vehicle")}
+              value={vehicle}
+              onChangeText={(v) => { setVehicle(v); setVehicleHint(null); }}
+              onBlur={() => lookupVehicle(vehicle)}
+              autoCapitalize="characters"
+              placeholder="MH12 AB 1234"
+            />
           </View>
           <Pressable
             testID="scan-qr-btn"
@@ -178,13 +211,20 @@ export function EntryForm({ direction, prefill }: Props) {
             <Text style={s.qrLbl}>QR</Text>
           </Pressable>
         </View>
+        {vehicleHint ? (
+          <Text style={s.vehicleHint} testID="vehicle-hint">↩ {vehicleHint} — autofilled</Text>
+        ) : null}
+        <BInput testID="input-driver" label="DRIVER NAME · चालक" value={driverName} onChangeText={setDriverName} />
+        <BInput testID="input-driver-phone" label="DRIVER PHONE · फोन" value={driverPhone} onChangeText={setDriverPhone} keyboardType="phone-pad" />
         <QRScanner
           visible={qrOpen}
           onClose={() => setQrOpen(false)}
           onScanned={(data) => {
-            setVehicle(data.toUpperCase().slice(0, 32));
+            const code = data.toUpperCase().slice(0, 32);
+            setVehicle(code);
             toast(`QR: ${data}`, "success");
             setQrOpen(false);
+            lookupVehicle(code);
           }}
         />
         {direction === "outward" && (
@@ -296,4 +336,5 @@ const s = StyleSheet.create({
   },
   qrIcon: { color: colors.onSurfaceInverse, fontSize: 22, fontWeight: "900" },
   qrLbl: { color: colors.onSurfaceInverse, fontSize: 10, fontWeight: "900", letterSpacing: 2 },
+  vehicleHint: { fontSize: 11, fontWeight: "900", color: colors.success, letterSpacing: 0.5, marginBottom: spacing.sm, marginTop: -spacing.sm },
 });

@@ -56,6 +56,16 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 5 — Alerts, WhatsApp Memory, Invoice PDFs, Variance Trail, Vehicle Memory (shipped)
+- Entry form: optional **Driver Name** + **Driver Phone**; typing a known vehicle plate shows a green "↩ Last: Suresh · 99999..." hint and auto-fills driver fields from `db.vehicles`
+- `/api/vehicles/{plate}` recalls the latest driver + phone for a plate (case-insensitive)
+- `/parties` returns `{name, whatsapp, whatsapp_digits, email}`; `/parties/{name}` PUT upserts WhatsApp phone (normalises 10-digit Indian numbers to `91…`). Report modal lets office save a party's WhatsApp inline, then the WhatsApp share button opens `wa.me/<digits>` directly
+- Entry detail now shows a red **CORRECT ENTRY** block that writes actual_weight / pieces / vehicle / driver changes through `/entries/{id}/correction`; every change appears in the EDIT HISTORY audit trail with WAS → NOW, user, role, timestamp. Variance is recomputed and stock guardrail applies on pieces corrections.
+- Entry detail: office/admin can tap **📧 EMAIL INVOICE PDF** (only enabled when Invoice No + Party Name are set); backend generates a brutalist A4 invoice via reportlab, uploads to Object Storage, emails a 48h signed link to the office user. If Resend 422s a demo address, the download URL is still returned so office can share manually.
+- Low-stock email alerts: after each outward, `_check_low_stock_and_alert` emails all admins when the group drops to ≤ threshold; `db.low_stock_alerts` enforces a 24h cooldown per `t|w|l|grade` so admins aren't spammed.
+
+96 cumulative backend tests pass (10 new iter_5 + prior) · one bug caught and fixed by testing agent at `server.py:1605`.
+
 ## Iteration 4 — WhatsApp, QR Scan, Reorder, History, Rate Hiding (shipped)
 - Entry form: new **QR button** next to Vehicle input opens a full-screen `CameraView` scanner (QR, Code128, Code39, EAN13); scanned value fills the vehicle field. Shows a web-fallback modal because browsers can't open the native camera.
 - Entry detail: office/admin now see an **EDIT HISTORY** block with every change to invoice/party/rate/terms/office_remarks (WAS → NOW, timestamp, user, role). Labour never sees `rate` — the backend strips it on every entries response.

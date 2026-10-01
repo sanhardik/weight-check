@@ -1,0 +1,56 @@
+{
+  "summary": "Backend-only testing for SteelTrack iter_5 (driver fields + vehicle memory, parties CRUD w/ WhatsApp, per-entry invoice PDF, correction endpoint w/ variance trail, low-stock email cooldown). Created /app/backend/tests/test_steeltrack_iter5_features.py with 17 tests across 5 classes. 16/17 iter_5 tests PASS. 1 iter_5 test FAILS due to a REAL BACKEND BUG in GET /api/reports/{id}.pdf when the report kind is 'invoice'. Full regression (iter_1..iter_5) = 86/89 pass. The 3 failures are: (a) iter_5 invoice-pdf download (new bug — reported below), (b) iter_2 TestAnalyticsSummary::test_analytics_reflects_new_inward (known flaky under pytest-xdist, carried from iter_3/iter_4), (c) iter_3 TestParties::test_parties_sorted_deduplicated — now stale because iter_5 changed the /parties response shape from List[str] to List[{name, whatsapp, whatsapp_digits, email}] (intentional breaking change per iter_5 spec; the old iter_3 test needs to be migrated by main agent). Coverage per iter_5 spec: ALL 15 review-request bullets executed, 14 PASS, 1 FAIL (invoice-pdf download — see rca_of_issue).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/reports/{report_id}.pdf", "issue": "500 Internal Server Error when downloading a 'kind=invoice' report. download_report (server.py:1605) references rep['party_name'] inside the Content-Disposition header, but POST /entries/{id}/invoice-pdf (server.py:1772) never stores party_name in db.reports — only party-statement reports do. Fix: use rep.get('party_name') or derive the filename from entry['party_name'] / 'invoice' fallback. Reproduces 100% of the time; backend log shows KeyError: 'party_name'.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/entries/{id}/invoice-pdf", "issue": "download_url falls back to a hard-coded 'https://weight-check-30.preview.emergentagent.com' when EXPO_PUBLIC_BACKEND_URL is not set at startup (server.py:1783). Fine for this preview env but will mis-route if the preview URL ever changes. Prefer to raise 500 or read env lazily."},
+      {"endpoint": "GET /api/parties", "issue": "The iter_3 regression test TestParties::test_parties_sorted_deduplicated still expects a List[str] — the iter_5 contract (List[dict]) silently breaks it. Not a product bug, but a test migration is needed in /app/backend/tests/test_steeltrack_iter3_features.py."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter5_features.py",
+    "/app/backend/tests/test_steeltrack_iter4_features.py",
+    "/app/backend/tests/test_steeltrack_iter3_features.py",
+    "/app/backend/tests/test_steeltrack_new_features.py",
+    "/app/backend/tests/test_steeltrack_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results_iter5.xml",
+    "/app/test_reports/pytest/pytest_results_iter5_full.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): server.py line 1605 — change rep['party_name'] to rep.get('party_name') or a kind-aware filename (e.g. invoice-<id>.pdf for kind=='invoice'). Also consider including party_name in the db.reports doc inserted by /entries/{id}/invoice-pdf so filenames remain informative.",
+    "FIX: Migrate /app/backend/tests/test_steeltrack_iter3_features.py::TestParties::test_parties_sorted_deduplicated to the new object-shape contract {name, whatsapp, whatsapp_digits, email}. Test currently asserts isinstance(p, str) which is obsolete.",
+    "(Carried from iter_2/iter_3/iter_4) server.py is now 1832 lines — the 700-line soft cap is 2.6x exceeded. Split into routers before iter_6.",
+    "(Carried) Harden iter_2 flaky test TestAnalyticsSummary::test_analytics_reflects_new_inward by filtering on created_by (avoid cross-worker inflation).",
+    "Consider storing invoice_no + party_name in db.reports when kind='invoice' for easier admin queries / download filename."
+  ],
+  "critical_code_review_comments": [
+    "Low-stock cooldown is correctly single-write per 24h: _check_low_stock_and_alert gates on `recent = ... last_sent_at > now-24h`, upserts after sending. Verified: 3 outwards taking a group 4→3→2→1 produced exactly ONE db.low_stock_alerts record. admins_notified is correctly 0 when Resend 422s (undeliverable *@steeltrack.com) — email failure is swallowed, outward still returns 200. Spec confirmed.",
+    "_check_low_stock_and_alert early-returns `if not admins or not EMAIL_KEY`. If EMAIL_KEY is unset in prod, NO record is written to db.low_stock_alerts at all — the cooldown would then be non-existent and every outward would attempt again (no cost since it returns). Acceptable but documents the design.",
+    "Correction endpoint correctly: (a) rejects empty body (400), (b) enforces stock guard on outward excluding self via {id:{$ne:entry_id}}, (c) recomputes theoretical when pieces changes and re-derives variance from stored actual, (d) propagates driver changes into db.vehicles via _remember_vehicle. _CORRECTION_FIELDS is the single source of truth for the history trail — matches spec.",
+    "_norm_phone correctly strips non-digits (`98765 43210` → `9876543210` → prefix `91` → `919876543210`). Edge case: 11-digit numbers starting with 0 (`09876543210`) → stays 11 digits, NOT prefixed. Not in spec but worth deciding product behaviour.",
+    "GET /vehicles/{plate} uppercases input and queries by _id, so case-insensitive lookup works via the _remember_vehicle upsert key (also uppercased). Confirmed: lowercase plate returns uppercase record.",
+    "BUG: GET /reports/{id}.pdf references rep['party_name'] unconditionally. Breaks all invoice-PDF downloads. See critical issue above.",
+    "server.py is 1832 lines. Modularisation is overdue."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter5_features.py (created, 17 tests)"
+  ],
+  "success_rate": {"backend": "94.1% iter_5 (16/17); 96.6% regression (86/89 — 1 real bug, 1 known-flaky, 1 stale iter_3 test obsoleted by iter_5 contract change)", "frontend": "N/A (not requested)"},
+  "seed_data_creation": "Tests create short-lived inward/outward entries with ITER5_* / PYTEST_LS grades and unique dim offsets for isolation. Low-stock test deletes the exact group_key record from db.low_stock_alerts before running, no cleanup after (DB-isolated preview). No new users.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "flaky_tests": [
+    {"test": "tests/test_steeltrack_new_features.py::TestAnalyticsSummary::test_analytics_reflects_new_inward", "issue": "Carried over. Cross-worker inward delta inflation under pytest-xdist. Not a product bug."}
+  ],
+  "context_for_next_testing_agent": "Public URL from EXPO_PUBLIC_BACKEND_URL in /app/frontend/.env. Seeded users unchanged. iter_5 added: (A) driver_name+driver_phone optional on InwardCreate/OutwardCreate (returned in EntryOut, labour can create). (B) /api/vehicles/{plate} — case-insensitive, returns {plate,last_driver,last_phone,last_used_at}; _remember_vehicle upserts on plate.upper() _id. (C) /api/parties shape changed from List[str] to List[{name,whatsapp,whatsapp_digits,email}] — admin/office only; _norm_phone strips non-digits and prefixes '91' for 10-digit numbers. (D) PATCH /entries/{id}/correction — admin/office only; _CORRECTION_FIELDS=(actual_weight_kg,pieces,vehicle_number,driver_name,driver_phone); pieces change recomputes theoretical; outward stock guard excludes self; empty body→400; labour→403; driver change propagates to db.vehicles. (E) POST /entries/{id}/invoice-pdf — admin/office only; requires invoice_no+party_name; returns {report_id,download_url(https+?token=),email_id,email_error,sent_to,entry_id}. (F) Low-stock email cooldown — db.low_stock_alerts keyed by 't|w|l|grade' (grade='-' when None), 24h cooldown, outward 200 regardless of email outcome; EMAIL_KEY unset ⇒ no record written. KNOWN BUG: GET /reports/{id}.pdf 500s on invoice-kind reports — rep['party_name'] KeyError at server.py:1605. iter_3 TestParties::test_parties_sorted_deduplicated needs migration to new object shape.",
+  "rca_of_issue": "GET /api/reports/{report_id}.pdf returns 500 for invoice downloads. Root cause: in download_report (server.py:1605) the Content-Disposition filename is built as rep['party_name'], but POST /entries/{id}/invoice-pdf (server.py:1772-1779) only inserts {id,path,owner_id,entry_id,kind:'invoice',created_at} into db.reports — party_name is only stored by the party-statement report flow. Repro: PATCH /office with invoice_no+party_name+rate → POST /invoice-pdf → GET download_url → 500 KeyError. Mitigation: use rep.get('party_name', entry_id) in the f-string, or branch on rep.get('kind') to build an appropriate filename (e.g. f'invoice-{report_id[:8]}.pdf' for kind=='invoice'). Also persist party_name into db.reports in the invoice-pdf endpoint so filenames stay useful. ETA: ~5-line fix in server.py:1605 + optional 1-line add to the insert_one at line 1772."
+}

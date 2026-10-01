@@ -96,6 +96,8 @@ class EntryBase(BaseModel):
     pieces: float = Field(gt=0)
     grade: Optional[str] = None
     vehicle_number: str
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
     actual_weight_kg: Optional[float] = None
     slip_photo_path: Optional[str] = None
     remarks: Optional[str] = None
@@ -118,6 +120,15 @@ class OfficeDetailsUpdate(BaseModel):
     office_remarks: Optional[str] = None
 
 
+class CorrectionUpdate(BaseModel):
+    """Admin / office correction after original entry — tracks a variance trail."""
+    actual_weight_kg: Optional[float] = None
+    pieces: Optional[float] = Field(default=None, gt=0)
+    vehicle_number: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+
+
 class EntryOut(BaseModel):
     id: str
     entry_number: str
@@ -128,6 +139,8 @@ class EntryOut(BaseModel):
     pieces: float
     grade: Optional[str] = None
     vehicle_number: str
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
     broker_name: Optional[str] = None
     theoretical_weight_kg: float
     actual_weight_kg: Optional[float] = None
@@ -439,6 +452,85 @@ async def _push_history(entry_id: str, changes: list) -> None:
     await db.entries.update_one({"id": entry_id}, {"$push": {"history": {"$each": changes}}})
 
 
+async def _remember_vehicle(plate: str, driver_name: Optional[str], driver_phone: Optional[str]) -> None:
+    plate = (plate or "").strip().upper()
+    if not plate:
+        return
+    update: dict = {"last_used_at": now_utc(), "plate": plate}
+    if driver_name:
+        update["last_driver"] = driver_name.strip()
+    if driver_phone:
+        update["last_phone"] = driver_phone.strip()
+    await db.vehicles.update_one({"_id": plate}, {"$set": update}, upsert=True)
+
+
+async def _check_low_stock_and_alert(thickness_mm: float, width_mm: float, length_mm: float, grade: Optional[str]) -> None:
+    """Called after outward entries. If this dimension dropped to <= threshold and
+    we haven't alerted in the last 24h, send an email to all admins."""
+    threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
+    pipeline = [
+        {"$match": {"thickness_mm": thickness_mm, "width_mm": width_mm, "length_mm": length_mm, "grade": grade}},
+        {"$group": {
+            "_id": None,
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+        }},
+    ]
+    avail = 0.0
+    async for g in db.entries.aggregate(pipeline):
+        avail = float(g["in"]) - float(g["out"])
+    if not (0 < avail <= threshold):
+        return
+
+    group_key = f"{thickness_mm}|{width_mm}|{length_mm}|{grade or '-'}"
+    cooldown_cutoff = now_utc() - timedelta(hours=24)
+    recent = await db.low_stock_alerts.find_one({"_id": group_key, "last_sent_at": {"$gt": cooldown_cutoff}})
+    if recent:
+        return
+
+    admins = await db.users.find({"role": "admin"}, {"_id": 0, "email": 1, "name": 1}).to_list(100)
+    if not admins or not EMAIL_KEY:
+        return
+
+    dim = f"{thickness_mm}×{width_mm}×{length_mm}" + (f" ({grade})" if grade else "")
+    subject = f"⚠ Low Stock Alert — {dim}"
+    html = (
+        f"<table role='presentation' width='100%' style='font-family:Arial,sans-serif;background:#ffffff'>"
+        f"<tr><td style='padding:24px'>"
+        f"<h2 style='margin:0 0 4px 0;color:#111111'>SteelTrack Low-Stock Alert</h2>"
+        f"<p style='margin:16px 0;color:#111111'>Dimension <b>{escape(dim)}</b> has dropped to "
+        f"<b style='color:#E50000;font-size:20px'>{avail}</b> pieces — at or below the alert threshold of {threshold}.</p>"
+        f"<p style='margin:16px 0;color:#52525B;font-size:13px'>Open the SteelTrack dashboard to see consumption, "
+        f"weeks-remaining and suggested reorder quantity.</p>"
+        f"<p style='margin:16px 0 0 0;font-size:11px;color:#888'>Automatic alert from {escape(EMAIL_FROM_NAME)}. "
+        f"We never ask for your password or card details by email.</p>"
+        f"</td></tr></table>"
+    )
+
+    sent_count = 0
+    for a in admins:
+        em = a.get("email")
+        if not em:
+            continue
+        try:
+            await _send_email(to=em, subject=subject, html=html)
+            sent_count += 1
+        except Exception as e:
+            logger.warning(f"Low-stock alert to {em} failed: {e}")
+
+    await db.low_stock_alerts.update_one(
+        {"_id": group_key},
+        {"$set": {
+            "last_sent_at": now_utc(),
+            "thickness_mm": thickness_mm, "width_mm": width_mm,
+            "length_mm": length_mm, "grade": grade,
+            "pieces_available_at_alert": avail,
+            "admins_notified": sent_count,
+        }},
+        upsert=True,
+    )
+
+
 @api_router.post("/entries/inward", response_model=EntryOut)
 async def create_inward(body: InwardCreate, user: dict = Depends(require_role("admin", "labour", "office"))):
     tw = calc_theoretical_weight(body.thickness_mm, body.width_mm, body.length_mm, body.pieces)
@@ -454,6 +546,8 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
         "pieces": body.pieces,
         "grade": body.grade,
         "vehicle_number": body.vehicle_number,
+        "driver_name": body.driver_name,
+        "driver_phone": body.driver_phone,
         "theoretical_weight_kg": tw,
         "actual_weight_kg": body.actual_weight_kg,
         "variance_pct": vpct,
@@ -464,6 +558,7 @@ async def create_inward(body: InwardCreate, user: dict = Depends(require_role("a
         "created_at": now_utc(),
     }
     await db.entries.insert_one(doc.copy())
+    await _remember_vehicle(body.vehicle_number, body.driver_name, body.driver_phone)
     doc = await _enrich_entry(doc, user)
     return EntryOut(**doc)
 
@@ -507,6 +602,8 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
         "pieces": body.pieces,
         "grade": body.grade,
         "vehicle_number": body.vehicle_number,
+        "driver_name": body.driver_name,
+        "driver_phone": body.driver_phone,
         "broker_name": body.broker_name,
         "source_entry_id": body.source_entry_id,
         "theoretical_weight_kg": tw,
@@ -519,6 +616,12 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
         "created_at": now_utc(),
     }
     await db.entries.insert_one(doc.copy())
+    await _remember_vehicle(body.vehicle_number, body.driver_name, body.driver_phone)
+    # Low-stock alert (non-blocking: swallow errors so entry save never fails)
+    try:
+        await _check_low_stock_and_alert(body.thickness_mm, body.width_mm, body.length_mm, body.grade)
+    except Exception as e:
+        logger.warning(f"Low-stock alert check failed: {e}")
     doc = await _enrich_entry(doc, user)
     return EntryOut(**doc)
 
@@ -585,6 +688,99 @@ async def update_office_details(
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     e = await _enrich_entry(e, user)
     return EntryOut(**e)
+
+
+_CORRECTION_FIELDS = ("actual_weight_kg", "pieces", "vehicle_number", "driver_name", "driver_phone")
+
+
+@api_router.patch("/entries/{entry_id}/correction", response_model=EntryOut)
+async def correct_entry(
+    entry_id: str,
+    body: CorrectionUpdate,
+    user: dict = Depends(require_role("admin", "office")),
+):
+    """Correct the original entry (actual weight, pieces, vehicle, driver).
+    Every changed field is pushed to the entry's history with user + role + timestamp."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    patch = {k: v for k, v in body.dict().items() if v is not None}
+    if not patch:
+        raise HTTPException(status_code=400, detail="No changes supplied")
+
+    # Stock guardrail: if pieces changes on an outward entry, make sure the new count
+    # doesn't exceed inventory at this group (excluding this entry's own current pieces).
+    if "pieces" in patch and e.get("direction") == "outward":
+        pipeline = [
+            {"$match": {
+                "thickness_mm": e["thickness_mm"], "width_mm": e["width_mm"],
+                "length_mm": e["length_mm"], "grade": e.get("grade"),
+                "id": {"$ne": entry_id},
+            }},
+            {"$group": {
+                "_id": None,
+                "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$pieces", 0]}},
+                "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$pieces", 0]}},
+            }},
+        ]
+        others_avail = 0.0
+        async for g in db.entries.aggregate(pipeline):
+            others_avail = float(g["in"]) - float(g["out"])
+        if float(patch["pieces"]) > others_avail + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=f"INSUFFICIENT STOCK after correction: only {others_avail} pcs available",
+            )
+
+    changes = []
+    for field in _CORRECTION_FIELDS:
+        if field in patch and e.get(field) != patch[field]:
+            changes.append({
+                "field": field,
+                "old": e.get(field),
+                "new": patch[field],
+                "by": user["id"],
+                "by_name": user.get("name"),
+                "by_role": user.get("role"),
+                "at": now_utc(),
+            })
+
+    # Recompute theoretical weight if pieces changed, then re-evaluate variance.
+    if "pieces" in patch:
+        new_pieces = float(patch["pieces"])
+        new_tw = calc_theoretical_weight(e["thickness_mm"], e["width_mm"], e["length_mm"], new_pieces)
+        patch["theoretical_weight_kg"] = new_tw
+        actual = patch.get("actual_weight_kg", e.get("actual_weight_kg"))
+        vpct, flagged = calc_variance(new_tw, actual)
+        patch["variance_pct"] = vpct
+        patch["variance_flagged"] = flagged
+    elif "actual_weight_kg" in patch:
+        vpct, flagged = calc_variance(e["theoretical_weight_kg"], float(patch["actual_weight_kg"]))
+        patch["variance_pct"] = vpct
+        patch["variance_flagged"] = flagged
+
+    await db.entries.update_one({"id": entry_id}, {"$set": patch})
+    if changes:
+        await _push_history(entry_id, changes)
+    if "vehicle_number" in patch or "driver_name" in patch or "driver_phone" in patch:
+        updated = await db.entries.find_one({"id": entry_id}, {"_id": 0, "vehicle_number": 1, "driver_name": 1, "driver_phone": 1})
+        if updated:
+            await _remember_vehicle(updated["vehicle_number"], updated.get("driver_name"), updated.get("driver_phone"))
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    e = await _enrich_entry(e, user)
+    return EntryOut(**e)
+
+
+# ---------- Vehicle memory ----------
+@api_router.get("/vehicles/{plate}")
+async def get_vehicle(plate: str, user: dict = Depends(current_user)):
+    plate = (plate or "").strip().upper()
+    if not plate:
+        raise HTTPException(status_code=400, detail="plate required")
+    v = await db.vehicles.find_one({"_id": plate}, {"_id": 0})
+    if not v:
+        return {"plate": plate, "last_driver": None, "last_phone": None, "last_used_at": None}
+    return v
 
 
 # ---------- Inventory ----------
@@ -1358,12 +1554,19 @@ async def generate_party_statement(
         f"</td></tr></table>"
     )
 
-    email_id = await _send_email(to=user["email"], subject=subject, html=html)
+    email_id: Optional[str] = None
+    email_error: Optional[str] = None
+    try:
+        email_id = await _send_email(to=user["email"], subject=subject, html=html)
+    except HTTPException as he:
+        email_error = str(he.detail)
+        logger.warning(f"Party statement email failed to {user['email']}: {email_error}")
 
     return {
         "report_id": report_id,
         "download_url": download_url,
         "email_id": email_id,
+        "email_error": email_error,
         "sent_to": user["email"],
         "entries_count": len(entries),
         "party_name": party,
@@ -1397,20 +1600,228 @@ async def download_report(
         content, ctype = await run_in_threadpool(_sync_get_object, rep["path"])
     except requests.HTTPError:
         raise HTTPException(status_code=404, detail="PDF not accessible")
+    kind = rep.get("kind") or "statement"
+    label = rep.get("party_name") or rep.get("invoice_no") or "steeltrack"
     return Response(
         content=content, media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{rep["party_name"]}-statement-{report_id[:8]}.pdf"'},
+        headers={"Content-Disposition": f'inline; filename="{label}-{kind}-{report_id[:8]}.pdf"'},
     )
 
 
 # ---------- Party & Grade helpers ----------
+def _norm_phone(phone: Optional[str]) -> Optional[str]:
+    """Normalise an Indian/International phone for wa.me (digits only)."""
+    if not phone:
+        return None
+    digits = re.sub(r"\D", "", phone)
+    if not digits:
+        return None
+    # If a 10-digit number is given, assume Indian number (+91)
+    if len(digits) == 10:
+        digits = "91" + digits
+    return digits
+
+
+class PartyUpsert(BaseModel):
+    name: str
+    whatsapp: Optional[str] = None
+    email: Optional[str] = None
+
+
 @api_router.get("/parties")
 async def list_parties(user: dict = Depends(require_role("admin", "office"))):
-    """Distinct party names seen on entries (for the report picker)."""
-    parties = await db.entries.distinct("party_name")
-    out = [p for p in parties if p]
-    out.sort(key=lambda s: s.lower())
+    """Distinct party names (from entries + stored party records) with WhatsApp phone."""
+    stored = {}
+    async for p in db.parties.find({}, {"_id": 0}):
+        stored[p["name"]] = p
+
+    names = set(stored.keys())
+    for p in await db.entries.distinct("party_name"):
+        if p:
+            names.add(p)
+
+    out = []
+    for name in sorted(names, key=lambda s: s.lower()):
+        rec = stored.get(name, {})
+        out.append({
+            "name": name,
+            "whatsapp": rec.get("whatsapp"),
+            "whatsapp_digits": _norm_phone(rec.get("whatsapp")),
+            "email": rec.get("email"),
+        })
     return out
+
+
+@api_router.put("/parties/{name}")
+async def upsert_party(name: str, body: PartyUpsert, user: dict = Depends(require_role("admin", "office"))):
+    norm = _norm_phone(body.whatsapp)
+    doc = {
+        "name": name.strip(),
+        "whatsapp": body.whatsapp.strip() if body.whatsapp else None,
+        "whatsapp_digits": norm,
+        "email": body.email.strip() if body.email else None,
+        "updated_by": user["id"],
+        "updated_at": now_utc(),
+    }
+    await db.parties.update_one({"name": doc["name"]}, {"$set": doc}, upsert=True)
+    return doc
+
+
+# ---------- Invoice PDF per entry ----------
+def _build_invoice_pdf(entry: dict) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=18 * mm, bottomMargin=18 * mm, title=f"Invoice {entry.get('invoice_no') or entry['entry_number']}")
+    styles = getSampleStyleSheet()
+    hdr = ParagraphStyle("hdr", parent=styles["Heading1"], fontSize=22, textColor=rl_colors.HexColor("#111111"), spaceAfter=0)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=rl_colors.HexColor("#52525B"), spaceAfter=12)
+
+    story = []
+    story.append(Paragraph("STEEL<font color='#FF4500'>TRACK</font>", hdr))
+    story.append(Paragraph("Delivery Invoice", sub))
+
+    inv_rows = [
+        ["Invoice No.", entry.get("invoice_no") or "-"],
+        ["Entry No.", entry.get("entry_number", "")],
+        ["Date", entry["created_at"].strftime("%d %b %Y, %H:%M") if hasattr(entry.get("created_at"), "strftime") else str(entry.get("created_at"))],
+        ["Party", entry.get("party_name") or "-"],
+        ["Vehicle", entry.get("vehicle_number", "")],
+        ["Broker", entry.get("broker_name") or "-"],
+    ]
+    meta = Table(inv_rows, colWidths=[90, 320])
+    meta.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR", (0, 0), (0, -1), rl_colors.HexColor("#52525B")),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(meta)
+    story.append(Spacer(1, 10))
+
+    rate = float(entry.get("rate") or 0)
+    wt = float(entry.get("theoretical_weight_kg") or 0)
+    amount = round(rate * wt, 2)
+
+    data = [
+        ["Description", "Dimensions (mm)", "Grade", "Pieces", "Weight (kg)", "Rate (Rs/kg)", "Amount (Rs)"],
+        [
+            f"{(entry.get('direction') or '').title()} Steel Plates",
+            f"{entry['thickness_mm']}×{entry['width_mm']}×{entry['length_mm']}",
+            entry.get("grade") or "-",
+            str(entry.get("pieces", "")),
+            f"{wt:,.2f}",
+            f"{rate:,.2f}" if rate else "-",
+            f"{amount:,.2f}" if rate else "-",
+        ],
+    ]
+    tbl = Table(data, colWidths=[112, 86, 46, 42, 54, 52, 68])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#111111")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#E4E4E7")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 14))
+
+    totals = Table([
+        ["Payment Terms", entry.get("payment_terms") or "-"],
+        ["Theoretical Weight (kg)", f"{wt:,.2f}"],
+        ["Actual Weight (kg)", f"{float(entry['actual_weight_kg']):,.2f}" if entry.get("actual_weight_kg") is not None else "-"],
+        ["Variance (%)", f"{entry.get('variance_pct')}%" if entry.get("variance_pct") is not None else "-"],
+        ["TOTAL AMOUNT (Rs)", f"{amount:,.2f}" if rate else "-"],
+    ], colWidths=[260, 200])
+    totals.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#E4E4E7")),
+        ("BACKGROUND", (0, -1), (-1, -1), rl_colors.HexColor("#FF4500")),
+        ("TEXTCOLOR", (0, -1), (-1, -1), rl_colors.white),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.append(totals)
+    story.append(Spacer(1, 24))
+    story.append(Paragraph("<font size=9 color='#52525B'>Generated by SteelTrack. Theoretical weight is calculated at 7850 kg/m^3.</font>", styles["Normal"]))
+    doc.build(story)
+    return buf.getvalue()
+
+
+@api_router.post("/entries/{entry_id}/invoice-pdf")
+async def generate_entry_invoice(entry_id: str, user: dict = Depends(require_role("admin", "office"))):
+    """Generate a single-entry invoice PDF, store it, and email the download link to the office user."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if not e.get("invoice_no") or not e.get("party_name"):
+        raise HTTPException(status_code=400, detail="Add Invoice No. and Party Name before generating the PDF")
+    if not user.get("email"):
+        raise HTTPException(status_code=400, detail="User has no email on file")
+
+    pdf_bytes = await run_in_threadpool(_build_invoice_pdf, e)
+    report_id = uuid.uuid4().hex
+    path = f"{APP_NAME}/invoices/{user['id']}/{report_id}.pdf"
+    await run_in_threadpool(_sync_put_object, path, pdf_bytes, "application/pdf")
+    await db.reports.insert_one({
+        "id": report_id,
+        "path": path,
+        "owner_id": user["id"],
+        "entry_id": entry_id,
+        "kind": "invoice",
+        "invoice_no": e.get("invoice_no"),
+        "party_name": e.get("party_name"),
+        "created_at": now_utc(),
+    })
+
+    public_base = (os.environ.get("EXPO_PUBLIC_BACKEND_URL") or "").strip()
+    if not public_base.startswith("https://"):
+        public_base = "https://weight-check-30.preview.emergentagent.com"
+    dl_token = pyjwt.encode(
+        {"sub": user["id"], "report_id": report_id, "exp": now_utc() + timedelta(hours=48)},
+        JWT_SECRET, algorithm=JWT_ALGO,
+    )
+    download_url = f"{public_base}/api/reports/{report_id}.pdf?token={dl_token}"
+
+    safe_name = escape(user.get("name") or user.get("email") or "")
+    safe_party = escape(e.get("party_name") or "")
+    safe_invoice = escape(e.get("invoice_no") or "")
+    subject = f"Invoice {e.get('invoice_no')} — {e.get('party_name')} — {EMAIL_FROM_NAME}"
+    html = (
+        f"<table role='presentation' width='100%' style='font-family:Arial,sans-serif;background:#ffffff'>"
+        f"<tr><td style='padding:24px'>"
+        f"<h2 style='margin:0 0 4px 0;color:#111111'>SteelTrack Invoice</h2>"
+        f"<p style='margin:0 0 16px 0;color:#52525B;font-size:13px'>Invoice: <b>{safe_invoice}</b> · Party: <b>{safe_party}</b></p>"
+        f"<p style='margin:0 0 12px 0;color:#111111'>Hi {safe_name}, your invoice PDF is ready. Tap below to download.</p>"
+        f"<p style='margin:16px 0'><a href='{escape(download_url)}' "
+        f"style='background:#FF4500;color:#ffffff;padding:12px 20px;text-decoration:none;font-weight:bold;letter-spacing:1px;display:inline-block'>DOWNLOAD INVOICE PDF</a></p>"
+        f"<p style='margin:16px 0 0 0;font-size:11px;color:#888'>Link expires in 48 hours. Sent by {escape(EMAIL_FROM_NAME)}. "
+        f"We never ask for your password or card details by email.</p>"
+        f"</td></tr></table>"
+    )
+    email_id: Optional[str] = None
+    email_error: Optional[str] = None
+    try:
+        email_id = await _send_email(to=user["email"], subject=subject, html=html)
+    except HTTPException as he:
+        email_error = str(he.detail)
+        logger.warning(f"Invoice email failed to {user['email']}: {email_error}")
+    return {
+        "report_id": report_id,
+        "download_url": download_url,
+        "email_id": email_id,
+        "email_error": email_error,
+        "sent_to": user["email"],
+        "entry_id": entry_id,
+    }
 
 
 app.include_router(api_router)
