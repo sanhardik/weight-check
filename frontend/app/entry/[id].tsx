@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Pressable, Linking } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Pressable, Linking, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, Redirect } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
@@ -43,6 +43,46 @@ export default function EntryDetail() {
   // Late slip attach (labour can add; office/admin can also replace)
   const [slipUri, setSlipUri] = useState<string | null>(null);
   const [slipBusy, setSlipBusy] = useState(false);
+
+  // Admin cancel / restore (soft delete)
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const isCancelled = entry?.status === "cancelled";
+
+  const confirmThen = (msg: string, fn: () => Promise<void>) => {
+    if (Platform.OS === "web") {
+      if ((globalThis as any).window?.confirm?.(msg)) fn();
+    } else {
+      Alert.alert("Confirm", msg, [
+        { text: "No", style: "cancel" },
+        { text: "Yes", style: "destructive", onPress: () => fn() },
+      ]);
+    }
+  };
+
+  const doCancel = () => {
+    confirmThen("Cancel this entry? It stays in history but stock will be reverted automatically.", async () => {
+      setCancelBusy(true);
+      try {
+        const upd = await apiFetch(`/entries/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason: cancelReason || null }) }, token);
+        setEntry(upd);
+        toast("Entry cancelled — stock reverted", "success");
+      } catch (e: any) { toast(e.message || "Cancel failed", "error"); }
+      finally { setCancelBusy(false); }
+    });
+  };
+
+  const doRestore = () => {
+    confirmThen("Restore this entry? Its stock effect will be applied again.", async () => {
+      setCancelBusy(true);
+      try {
+        const upd = await apiFetch(`/entries/${id}/restore`, { method: "POST", body: "{}" }, token);
+        setEntry(upd);
+        toast("Entry restored", "success");
+      } catch (e: any) { toast(e.message || "Restore failed", "error"); }
+      finally { setCancelBusy(false); }
+    });
+  };
 
   const pickSlip = async (fromCamera: boolean) => {
     try {
@@ -263,6 +303,28 @@ export default function EntryDetail() {
           </Text>
         </View>
 
+        {isCancelled ? (
+          <View style={s.cancelledBanner} testID="cancelled-banner">
+            <Text style={s.cancelledTitle}>✕ CANCELLED · रद्द — this entry no longer affects stock</Text>
+            <Text style={s.cancelledSub}>
+              {entry.cancelled_by_name ? `By ${entry.cancelled_by_name}` : ""}{entry.cancelled_at ? ` · ${new Date(entry.cancelled_at).toLocaleString()}` : ""}{entry.cancel_reason ? ` · Reason: ${entry.cancel_reason}` : ""}
+            </Text>
+          </View>
+        ) : null}
+
+        {user.role === "admin" ? (
+          <View style={s.cancelBlock}>
+            {isCancelled ? (
+              <BButton testID="restore-entry-btn" label={cancelBusy ? "..." : "↩ RESTORE ENTRY (re-apply stock)"} onPress={doRestore} loading={cancelBusy} variant="secondary" size="md" />
+            ) : (
+              <View>
+                <BInput testID="cancel-reason" label="CANCEL REASON (optional)" value={cancelReason} onChangeText={setCancelReason} placeholder="e.g. duplicate entry" />
+                <BButton testID="cancel-entry-btn" label={cancelBusy ? "..." : "✕ CANCEL ENTRY (reverts stock)"} onPress={doCancel} loading={cancelBusy} variant="danger" size="md" />
+              </View>
+            )}
+          </View>
+        ) : null}
+
         <View style={s.kv}><Text style={s.k}>DATE</Text><Text style={s.v}>{new Date(entry.entry_date || entry.created_at).toLocaleDateString()}</Text></View>
         <View style={s.kv}><Text style={s.k}>VEHICLE</Text><Text style={s.v}>{entry.vehicle_number}</Text></View>
         {entry.driver_name ? <View style={s.kv}><Text style={s.k}>DRIVER</Text><Text style={s.v}>{entry.driver_name}</Text></View> : null}
@@ -311,7 +373,7 @@ export default function EntryDetail() {
                   resizeMode="contain"
                 />
               )}
-              {(user.role === "office" || user.role === "admin") ? (
+              {(user.role === "office" || user.role === "admin") && !isCancelled ? (
                 <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
                   <BButton testID="slip-replace-camera" label="REPLACE · CAMERA" onPress={() => pickSlip(true)} variant="ghost" size="sm" />
                   <BButton testID="slip-replace-gallery" label="REPLACE · GALLERY" onPress={() => pickSlip(false)} variant="ghost" size="sm" />
@@ -320,7 +382,11 @@ export default function EntryDetail() {
             </View>
           ) : (
             <View>
-              {slipUri ? (
+              {isCancelled ? (
+                <View style={s.addSlipBox}>
+                  <Text style={s.addSlipTxt}>No slip photo · upload locked while entry is cancelled</Text>
+                </View>
+              ) : slipUri ? (
                 <View style={{ position: "relative" }}>
                   <Image source={{ uri: slipUri }} style={s.slip} resizeMode="contain" />
                   {slipBusy ? <View style={s.slipOverlay}><ActivityIndicator color={colors.onSurfaceInverse} /><Text style={{ color: colors.onSurfaceInverse, fontWeight: "800", marginTop: 6 }}>ATTACHING + READING...</Text></View> : null}
@@ -364,7 +430,7 @@ export default function EntryDetail() {
 
         <View style={s.officeBlock}>
           <Text style={s.secTitle}>OFFICE DETAILS</Text>
-          {canEdit ? (
+          {canEdit && !isCancelled ? (
             <>
               <BInput testID="input-invoice" label={t("invoice_no")} value={invoice} onChangeText={setInvoice} />
               <BInput testID="input-party" label={t("party_name")} value={party} onChangeText={setParty} />
@@ -395,7 +461,7 @@ export default function EntryDetail() {
           )}
         </View>
 
-        {canEdit ? (
+        {canEdit && !isCancelled ? (
           <View style={s.correctionBlock} testID="correction-block">
             <Text style={s.secTitle}>CORRECT ENTRY · सुधार</Text>
             <Text style={s.correctionHint}>Every change here is logged in the audit trail below.</Text>
@@ -408,7 +474,7 @@ export default function EntryDetail() {
           </View>
         ) : null}
 
-        {user.role === "admin" ? (
+        {user.role === "admin" && !isCancelled ? (
           <View style={s.adminBlock} testID="admin-edit-block">
             <Pressable testID="admin-edit-toggle" onPress={() => setAdminEditOpen((o) => !o)} style={s.adminHdr}>
               <Text style={s.adminHdrTxt}>🛠 ADMIN FULL EDIT · पूर्ण संपादन {adminEditOpen ? "▲" : "▼"}</Text>
@@ -493,6 +559,10 @@ const s = StyleSheet.create({
   mismatchTitle: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.onError },
   mismatchTxt: { fontSize: 12, fontWeight: "700", color: colors.onError, marginTop: 4 },
   mismatchHint: { fontSize: 11, color: colors.onError, marginTop: 8, fontStyle: "italic", opacity: 0.9 },
+  cancelledBanner: { padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.muted, marginBottom: spacing.md },
+  cancelledTitle: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 13, letterSpacing: 1 },
+  cancelledSub: { color: colors.onSurfaceInverse, fontSize: 11, marginTop: 4, opacity: 0.9 },
+  cancelBlock: { marginBottom: spacing.md, padding: spacing.sm, borderWidth: 1.5, borderColor: colors.error, borderStyle: "dashed" },
   secTitle: { fontSize: 12, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginTop: spacing.lg, marginBottom: spacing.sm },
   officeBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.brand, backgroundColor: colors.brandTertiary },
 

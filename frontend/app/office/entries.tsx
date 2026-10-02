@@ -116,7 +116,7 @@ export default function OfficeEntries() {
               key={e.id}
               testID={`office-row-${e.entry_number}`}
               onPress={() => router.push({ pathname: "/office/entries/[id]", params: { id: e.id } } as any)}
-              style={({ hovered }: any) => [s.trow, hovered && { backgroundColor: colors.brandTertiary }]}
+              style={({ hovered }: any) => [s.trow, hovered && { backgroundColor: colors.brandTertiary }, e.status === "cancelled" && { opacity: 0.55 }]}
             >
               <Text style={[s.td, { width: 110, fontWeight: "900" }]}>{e.entry_number}</Text>
               <Text style={[s.td, { width: 70, color: e.direction === "inward" ? colors.brand : colors.onSurface, fontWeight: "900" }]}>{e.direction === "inward" ? "IN" : "OUT"}</Text>
@@ -128,7 +128,7 @@ export default function OfficeEntries() {
               <Text style={[s.td, { width: 130 }]} numberOfLines={1}>{e.vehicle_number}</Text>
               <Text style={[s.td, { flex: 1 }]} numberOfLines={1}>{e.party_name || "—"}</Text>
               <View style={{ width: 100, flexDirection: "row", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-                {e.invoice_no ? <Text style={[s.tag, s.tagOk]}>✓ INV</Text> : <Text style={[s.tag, s.tagWarn]}>⏳</Text>}
+                {e.status === "cancelled" ? <Text style={[s.tag, { backgroundColor: colors.muted, color: colors.onSurfaceInverse }]}>✕ CXL</Text> : e.invoice_no ? <Text style={[s.tag, s.tagOk]}>✓ INV</Text> : <Text style={[s.tag, s.tagWarn]}>⏳</Text>}
                 {e.variance_flagged ? <Text style={[s.tag, s.tagErr]}>⚠ VAR</Text> : null}
                 {e.slip_mismatch_flag ? <Text style={[s.tag, s.tagErr]}>⚠ SLIP</Text> : null}
               </View>

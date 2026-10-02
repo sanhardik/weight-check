@@ -109,7 +109,7 @@ EXPECTED_HEADERS = [
     "Entry No.", "Direction", "Date", "Thickness (mm)", "Width (mm)", "Length (mm)",
     "Pieces", "Grade", "Vehicle No.", "Broker", "Theoretical Wt (kg)", "Actual Wt (kg)",
     "Variance %", "Flagged", "Invoice No.", "Party Name", "Rate (Rs)", "Payment Terms",
-    "Remarks", "Office Remarks", "Created By",
+    "Remarks", "Office Remarks", "Created By", "Status",
 ]
 
 
@@ -139,9 +139,9 @@ class TestCSVExport:
         rows = _parse_csv_rows(r.text)
         assert len(rows) >= 1
         assert rows[0] == EXPECTED_HEADERS, f"header mismatch: {rows[0]}"
-        assert len(rows[0]) == 21
+        assert len(rows[0]) == 22
         for row in rows[1:]:
-            assert len(row) == 21, f"data row has {len(row)} fields, expected 21: {row}"
+            assert len(row) == 22, f"data row has {len(row)} fields, expected 22: {row}"
 
     def test_csv_export_filter_inward(self, api_client, admin_auth):
         r = api_client.get(f"{BASE_URL}/api/entries.csv",

@@ -13,6 +13,7 @@ type Entry = {
   id: string;
   entry_number: string;
   direction: "inward" | "outward";
+  status?: string | null;
   thickness_mm: number; width_mm: number; length_mm: number;
   pieces: number; grade?: string | null;
   vehicle_number: string; broker_name?: string | null;
@@ -140,7 +141,7 @@ export default function EntriesScreen() {
           renderItem={({ item: e }) => (
             <Pressable
               testID={`entry-${e.entry_number}`}
-              style={({ pressed }) => [s.card, { opacity: pressed ? 0.85 : 1, borderLeftColor: e.direction === "inward" ? colors.brand : colors.surfaceInverse }]}
+              style={({ pressed }) => [s.card, { opacity: pressed ? 0.85 : (e.status === "cancelled" ? 0.5 : 1), borderLeftColor: e.direction === "inward" ? colors.brand : colors.surfaceInverse }]}
               onPress={() => router.push({ pathname: "/entry/[id]", params: { id: e.id } })}
             >
               <View style={s.cardTop}>
@@ -148,6 +149,7 @@ export default function EntriesScreen() {
                   {e.direction === "inward" ? "IN · आवक" : "OUT · जावक"}
                 </Text>
                 <Text style={s.entryNo}>{e.entry_number}</Text>
+                {e.status === "cancelled" ? <Text style={s.flag}>✕ CANCELLED</Text> : null}
                 {e.slip_mismatch_flag ? <Text style={s.flag}>⚠ SLIP</Text> : null}
                 {e.variance_flagged ? <Text style={s.flag}>⚠ {e.variance_pct?.toFixed(2)}%</Text> : null}
               </View>

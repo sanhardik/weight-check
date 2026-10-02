@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 15 — Entry Soft-Delete verified end-to-end. Backend: new test_steeltrack_iter15_softdelete.py 11/11 PASS covering: cancel inward w/ untouched stock (200, status/cancel_reason/cancelled_at/cancelled_by_name + history status entry with reason, inventory group disappears), cancel partially-dispatched inward blocked (400 'already dispatched', stock unchanged), outward cancel→stock back / restore→stock consumed / restore-on-insufficient-stock 400, double-cancel 400, restore-active 400, office+labour 403 on both, exclusions from analytics daily totals / parties ledger / FIFO auto-match (skips cancelled inward, picks next oldest) / party-statement (404 'No entries' when only cancelled), CSV keeps cancelled rows with Status column='cancelled', mutation guards (correction/office/full-edit/slip 400 'cancelled' msg; work again after restore). Full regression 235/236 parallel; 1 failure = legacy test_analytics_reflects_new_inward (xdist race on exact totals_today deltas — passes standalone, same flake class as known iter9/iter12). Frontend mobile (390x844): admin cancel with reason via confirm dialog → grey CANCELLED banner (By/at/Reason) → correction/office/admin-edit blocks hidden → restore-entry-btn → banner gone + forms back; entries list shows ✕ CANCELLED badge + 0.5-opacity dimmed card. Portal (1366x820): ✕ CXL badge + 0.55 dimmed row; cancelled banner on detail; admin restore→re-cancel cycle with confirm dialogs; office (non-admin) sees banner but NO cancel/restore controls. Test data state restored (INW-20261002-0947 active, OUT-20261002-0274 cancelled 'wrong vehicle').",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/analytics/summary (test-only)", "issue": "Legacy test_analytics_reflects_new_inward failed once under xdist full run (exact totals_today delta assertion races with other workers creating entries today); passes standalone. Test-infrastructure flake, not a product bug"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "office/entries/[id].tsx", "issue": "On a CANCELLED entry the Office details form (invoice/party/rate/terms + SAVE DETAILS) and Correct entry block remain visible/editable; backend rejects with 400 'Entry is cancelled' but UX is inconsistent with mobile where edit forms are hidden while cancelled. Consider gating with !isCancelled", "testID": "office-cancelled-banner", "priority": "LOW"},
+      {"component": "entry/[id].tsx", "issue": "Slip-photo add block (slip-add-camera/slip-add-gallery, 'No slip photo yet — add it now') still visible while entry is cancelled; attach attempts 400 at backend. Minor — hide or disable while cancelled", "testID": "add-slip-block", "priority": "LOW"},
+      {"component": "Entries screen", "issue": "Pre-existing React duplicate-key console error ('Encountered two children with the same key') at /entries still surfaces as red banner in dev build (carried from iter14)", "testID": "entries-list", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter15_softdelete.py",
+    "/app/test_reports/pytest/pytest_results_iter15.xml",
+    "/app/test_reports/pytest/pytest_results_iter15_full.xml"
+  ],
+  "action_items": [
+    "Portal entry detail: hide/disable Office details form + Correct entry block while entry is cancelled (mirror mobile behavior)",
+    "Mobile entry detail: hide add-slip block while entry is cancelled",
+    "Fix pre-existing duplicate React key warning on /entries",
+    "(Test infra) Make legacy analytics tests delta-tolerant or pin them to one xdist worker to remove totals_today race"
+  ],
+  "critical_code_review_comments": [
+    "Cancel/restore guardrails are sound: inward cancel checks per-line-item availability (avail - pieces < 0 → 400), outward restore checks pieces > avail → 400, both with clear messages; all stock/analytics/ledger/FIFO/PDF/tally pipelines filter status != 'cancelled' (verified at server.py:583,693,771,981,1158,1177,1490,1568,1638,1689,1706,1722,1728,1740,2355,2527).",
+    "Restore correctly $unsets cancel_reason/cancelled_at/cancelled_by/cancelled_by_name so restored EntryOut is clean.",
+    "CSV export intentionally keeps cancelled rows with Status column — audit requirement met.",
+    "Iter14 action item resolved: office sidebar testIDs now slugified via label.toLowerCase().replace(/\\s+/g,'-') (office-nav-opening-stock)."
+  ],
+  "updated_files": ["/app/backend/tests/test_steeltrack_iter15_softdelete.py"],
+  "success_rate": {"backend": "100% (11/11 new soft-delete tests; 235/236 full suite with 1 known xdist analytics race passing standalone)", "frontend": "100% (mobile admin cancel/restore cycle + list badges; portal admin restore/re-cancel cycle; portal office role gating — all pass)"},
+  "seed_data_creation": "Tests use isolated grade CXL-ITER15 with unique dims per scenario (17.5-29.5mm); all test entries end in cancelled state (excluded from stock/math, visible only in entries list + CSV audit). Reused existing CANCEL-TEST grade entries (vehicle MH01CNCL01) for UI E2E and restored their original state afterwards (inward active, outward cancelled 'wrong vehicle').",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Entry soft-delete fully working on backend + both frontends. Web confirm dialogs: use page.once('dialog', accept) before clicking cancel/restore. Office portal login lands on Dashboard — navigate via page.goto(BASE + '/office/entries'). To switch portal users: click office-logout first (login page redirects when already authed). Full suite now ~236 tests; expect occasional xdist flakes on analytics-delta and iter9/iter12 OCR tests — all pass standalone with -n 0. CANCEL-TEST UI fixture: vehicle MH01CNCL01, inward INW-20261002-0947 (active, 10pcs) + outward OUT-20261002-0274 (cancelled, 'wrong vehicle') — keep this state.",
+  "rca_of_issue": "No defects in the soft-delete feature. Only residual: legacy test_analytics_reflects_new_inward asserts exact totals_today deltas between two reads, so any concurrent xdist worker creating an entry breaks it — reproduces only in full parallel runs, passes standalone; mitigation is test-side (delta tolerance or worker pinning), product code is correct (cancelled entries verified excluded from analytics by the new passing test)."
+}

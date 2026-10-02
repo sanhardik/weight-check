@@ -24,6 +24,28 @@ export default function OfficeEntryDetail() {
   const [correcting, setCorrecting] = useState(false);
   const [invoicing, setInvoicing] = useState(false);
   const [slipBusy, setSlipBusy] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const isCancelled = e?.status === "cancelled";
+  const isAdmin = user?.role === "admin";
+
+  const doCancel = () => {
+    if (!(globalThis as any).window?.confirm?.("Cancel this entry? It stays in history but stock will be reverted automatically.")) return;
+    setCancelBusy(true);
+    apiFetch(`/entries/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason: cancelReason || null }) }, token)
+      .then((upd) => { setE(upd); toast("Entry cancelled — stock reverted", "success"); })
+      .catch((err: any) => toast(err.message || "Cancel failed", "error"))
+      .finally(() => setCancelBusy(false));
+  };
+
+  const doRestore = () => {
+    if (!(globalThis as any).window?.confirm?.("Restore this entry? Its stock effect will be applied again.")) return;
+    setCancelBusy(true);
+    apiFetch(`/entries/${id}/restore`, { method: "POST", body: "{}" }, token)
+      .then((upd) => { setE(upd); toast("Entry restored", "success"); })
+      .catch((err: any) => toast(err.message || "Restore failed", "error"))
+      .finally(() => setCancelBusy(false));
+  };
 
   const attachSlip = async () => {
     try {
@@ -114,7 +136,7 @@ export default function OfficeEntryDetail() {
           <Text style={s.hdrNo}>{e.entry_number}</Text>
         </View>
         <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-          {e.invoice_no ? <Text style={[s.badge, { backgroundColor: colors.success, color: colors.onSuccess }]}>✓ INVOICED</Text> : <Text style={[s.badge, { backgroundColor: colors.warning, color: colors.onWarning }]}>⏳ PENDING</Text>}
+          {isCancelled ? <Text style={[s.badge, { backgroundColor: colors.muted, color: colors.onSurfaceInverse }]}>✕ CANCELLED</Text> : e.invoice_no ? <Text style={[s.badge, { backgroundColor: colors.success, color: colors.onSuccess }]}>✓ INVOICED</Text> : <Text style={[s.badge, { backgroundColor: colors.warning, color: colors.onWarning }]}>⏳ PENDING</Text>}
           {e.variance_flagged ? <Text style={[s.badge, { backgroundColor: colors.error, color: colors.onError }]}>⚠ VARIANCE {e.variance_pct?.toFixed(2)}%</Text> : null}
           {e.slip_mismatch_flag ? <Text style={[s.badge, { backgroundColor: colors.error, color: colors.onError }]}>⚠ SLIP MISMATCH</Text> : null}
         </View>
@@ -124,6 +146,35 @@ export default function OfficeEntryDetail() {
         <View style={s.mismatch} testID="office-slip-mismatch">
           <Text style={s.mismatchTitle}>⚠ SLIP MISMATCH — correct in the correction block below, flag clears automatically</Text>
           {(e.slip_mismatch_details || []).map((d: string, i: number) => <Text key={i} style={s.mismatchLine}>• {d}</Text>)}
+        </View>
+      ) : null}
+
+      {isCancelled ? (
+        <View style={s.cancelled} testID="office-cancelled-banner">
+          <Text style={s.cancelledTitle}>✕ CANCELLED — this entry no longer affects stock</Text>
+          <Text style={s.cancelledSub}>
+            {e.cancelled_by_name ? `By ${e.cancelled_by_name}` : ""}{e.cancelled_at ? ` · ${new Date(e.cancelled_at).toLocaleString()}` : ""}{e.cancel_reason ? ` · Reason: ${e.cancel_reason}` : ""}
+          </Text>
+        </View>
+      ) : null}
+
+      {isAdmin ? (
+        <View style={s.cancelBlock} testID="office-cancel-block">
+          {isCancelled ? (
+            <Pressable onPress={doRestore} disabled={cancelBusy} style={[s.secondary, cancelBusy && { opacity: 0.6 }]} testID="office-restore-btn">
+              <Text style={s.secondaryTxt}>{cancelBusy ? "..." : "↩ RESTORE ENTRY (re-apply stock)"}</Text>
+            </Pressable>
+          ) : (
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "flex-end" }}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.fieldLbl}>CANCEL REASON (OPTIONAL)</Text>
+                <TextInput testID="office-cancel-reason" value={cancelReason} onChangeText={setCancelReason} placeholder="e.g. duplicate entry" placeholderTextColor={colors.muted} style={s.input} />
+              </View>
+              <Pressable onPress={doCancel} disabled={cancelBusy} style={[s.danger, cancelBusy && { opacity: 0.6 }]} testID="office-cancel-btn">
+                <Text style={s.dangerTxt}>{cancelBusy ? "..." : "✕ CANCEL ENTRY"}</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       ) : null}
 
@@ -166,12 +217,12 @@ export default function OfficeEntryDetail() {
             {e.slip_photo_path ? (
               <View>
                 <Image source={{ uri: fileUrl(e.slip_photo_path, token) }} style={s.slip} resizeMode="contain" />
-                <Pressable onPress={attachSlip} disabled={slipBusy} style={[s.secondary, { marginTop: 8, alignSelf: "flex-start", paddingHorizontal: 12 }, slipBusy && { opacity: 0.5 }]} testID="office-slip-replace">
+                <Pressable onPress={attachSlip} disabled={slipBusy || isCancelled} style={[s.secondary, { marginTop: 8, alignSelf: "flex-start", paddingHorizontal: 12 }, (slipBusy || isCancelled) && { opacity: 0.5 }]} testID="office-slip-replace">
                   <Text style={s.secondaryTxt}>{slipBusy ? "..." : "⇪ REPLACE SLIP"}</Text>
                 </Pressable>
               </View>
             ) : (
-              <Pressable onPress={attachSlip} disabled={slipBusy} style={s.addSlip} testID="office-slip-add">
+              <Pressable onPress={attachSlip} disabled={slipBusy || isCancelled} style={[s.addSlip, (slipBusy || isCancelled) && { opacity: 0.5 }]} testID="office-slip-add">
                 <Text style={s.addSlipTxt}>{slipBusy ? "UPLOADING + READING..." : "📷 ADD WEIGHMENT SLIP PHOTO"}</Text>
                 <Text style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>Auto-reads weight & vehicle number from the slip</Text>
               </Pressable>
@@ -180,7 +231,12 @@ export default function OfficeEntryDetail() {
         </View>
 
         {/* RIGHT: editable */}
-        <View style={s.col}>
+        <View style={[s.col, isCancelled && { opacity: 0.6 }]}>
+          {isCancelled ? (
+            <View style={{ padding: spacing.md, borderWidth: 1.5, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, marginBottom: spacing.md }}>
+              <Text style={{ fontSize: 12, color: colors.muted, fontWeight: "700" }}>Editing is locked while the entry is cancelled. Restore it first.</Text>
+            </View>
+          ) : null}
           <Text style={s.sectionTitle}>Office details · ऑफिस विवरण</Text>
           <OfficeField label="Invoice No." value={invoice} onChangeText={setInvoice} testID="office-invoice" />
           <OfficeField label="Party name" value={party} onChangeText={setParty} testID="office-party" />
@@ -188,10 +244,10 @@ export default function OfficeEntryDetail() {
           <OfficeField label="Payment terms" value={terms} onChangeText={setTerms} testID="office-terms" />
           <OfficeField label="Office remarks" value={note} onChangeText={setNote} testID="office-remarks" multiline />
           <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-            <Pressable onPress={saveOffice} disabled={saving} style={[s.primary, saving && { opacity: 0.7 }]} testID="office-save-details">
+            <Pressable onPress={saveOffice} disabled={saving || isCancelled} style={[s.primary, (saving || isCancelled) && { opacity: 0.7 }]} testID="office-save-details">
               <Text style={s.primaryTxt}>{saving ? "SAVING..." : "SAVE DETAILS"}</Text>
             </Pressable>
-            <Pressable onPress={emailInvoice} disabled={invoicing || !e.invoice_no || !e.party_name} style={[s.secondary, (invoicing || !e.invoice_no || !e.party_name) && { opacity: 0.4 }]} testID="office-email-invoice">
+            <Pressable onPress={emailInvoice} disabled={invoicing || !e.invoice_no || !e.party_name || isCancelled} style={[s.secondary, (invoicing || !e.invoice_no || !e.party_name || isCancelled) && { opacity: 0.4 }]} testID="office-email-invoice">
               <Text style={s.secondaryTxt}>{invoicing ? "..." : "✉ EMAIL INVOICE PDF"}</Text>
             </Pressable>
           </View>
@@ -202,7 +258,7 @@ export default function OfficeEntryDetail() {
           <OfficeField label="Pieces" value={corrPieces} onChangeText={setCorrPieces} keyboardType="decimal-pad" testID="office-corr-pieces" />
           <OfficeField label="Vehicle number" value={corrVehicle} onChangeText={setCorrVehicle} autoCapitalize="characters" testID="office-corr-vehicle" />
           <OfficeField label="Driver name" value={corrDriver} onChangeText={setCorrDriver} testID="office-corr-driver" />
-          <Pressable onPress={saveCorrection} disabled={correcting} style={[s.danger, correcting && { opacity: 0.7 }]} testID="office-save-correction">
+          <Pressable onPress={saveCorrection} disabled={correcting || isCancelled} style={[s.danger, (correcting || isCancelled) && { opacity: 0.7 }]} testID="office-save-correction">
             <Text style={s.dangerTxt}>{correcting ? "SAVING..." : "SAVE CORRECTION"}</Text>
           </Pressable>
 
@@ -275,6 +331,10 @@ const s = StyleSheet.create({
   slip: { width: "100%", aspectRatio: 1.3, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
   addSlip: { padding: spacing.lg, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.brand, backgroundColor: colors.brandTertiary, alignItems: "center" },
   addSlipTxt: { fontSize: 13, fontWeight: "900", color: colors.onSurface, letterSpacing: 1 },
+  cancelled: { padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.muted, marginBottom: spacing.md },
+  cancelledTitle: { color: colors.onSurfaceInverse, fontWeight: "900", fontSize: 13, letterSpacing: 1 },
+  cancelledSub: { color: colors.onSurfaceInverse, fontSize: 11, marginTop: 4, opacity: 0.9 },
+  cancelBlock: { padding: spacing.md, borderWidth: 1.5, borderColor: colors.error, borderStyle: "dashed", marginBottom: spacing.md },
 
   fieldLbl: { fontSize: 10, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: 4 },
   input: { borderWidth: 1.5, borderColor: colors.border, padding: 10, fontSize: 14, color: colors.onSurface, backgroundColor: colors.surface },

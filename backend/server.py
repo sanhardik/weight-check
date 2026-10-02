@@ -172,6 +172,10 @@ class EntryOut(BaseModel):
     slip_ocr_vehicle_number: Optional[str] = None
     slip_mismatch_flag: Optional[bool] = None
     slip_mismatch_details: Optional[List[str]] = None
+    status: Optional[str] = None
+    cancel_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancelled_by_name: Optional[str] = None
     remarks: Optional[str] = None
     source_entry_id: Optional[str] = None
     entry_date: Optional[datetime] = None
@@ -576,6 +580,7 @@ async def _check_low_stock_and_alert(thickness_mm: float, width_mm: float, lengt
     pipeline = [
         {"$unwind": "$line_items"},
         {"$match": {
+            "status": {"$ne": "cancelled"},
             "line_items.thickness_mm": thickness_mm,
             "line_items.width_mm": width_mm,
             "line_items.length_mm": length_mm,
@@ -685,6 +690,7 @@ async def _check_outward_stock(items: List[dict]) -> None:
         pipeline = [
             {"$unwind": "$line_items"},
             {"$match": {
+                "status": {"$ne": "cancelled"},
                 "line_items.thickness_mm": li["thickness_mm"],
                 "line_items.width_mm": li["width_mm"],
                 "line_items.length_mm": li["length_mm"],
@@ -762,6 +768,7 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
     if not source_entry_id:
         async for cand in db.entries.find({
             "direction": "inward",
+            "status": {"$ne": "cancelled"},
             "line_items.thickness_mm": first["thickness_mm"],
             "line_items.width_mm": first["width_mm"],
             "line_items.length_mm": first["length_mm"],
@@ -856,6 +863,7 @@ async def attach_slip(entry_id: str, body: SlipAttach, user: dict = Depends(curr
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
+    _ensure_not_cancelled(e)
     if e.get("slip_photo_path") and user["role"] == "labour":
         raise HTTPException(status_code=400, detail="Slip already attached — contact office to change it")
 
@@ -913,6 +921,7 @@ async def update_office_details(
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
+    _ensure_not_cancelled(e)
     update = {k: v for k, v in body.dict().items() if v is not None}
 
     # Build history entries for every tracked field that actually changes
@@ -956,6 +965,7 @@ async def correct_entry(
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
+    _ensure_not_cancelled(e)
     patch = {k: v for k, v in body.dict().items() if v is not None}
     if not patch:
         raise HTTPException(status_code=400, detail="No changes supplied")
@@ -968,6 +978,7 @@ async def correct_entry(
                 "thickness_mm": e["thickness_mm"], "width_mm": e["width_mm"],
                 "length_mm": e["length_mm"], "grade": e.get("grade"),
                 "id": {"$ne": entry_id},
+                "status": {"$ne": "cancelled"},
             }},
             {"$group": {
                 "_id": None,
@@ -1035,6 +1046,81 @@ async def correct_entry(
     return EntryOut(**e)
 
 
+# ---------- Entry soft-delete (admin cancel / restore) ----------
+class CancelEntry(BaseModel):
+    reason: Optional[str] = None
+
+
+def _ensure_not_cancelled(e: dict):
+    if e.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Entry is cancelled — restore it before editing")
+
+
+@api_router.post("/entries/{entry_id}/cancel", response_model=EntryOut)
+async def cancel_entry(entry_id: str, body: CancelEntry, user: dict = Depends(require_role("admin"))):
+    """Admin soft-delete: keeps the entry for audit, removes it from ALL stock/math
+    (inventory, guardrails, FIFO, analytics, ledger, reports). Guardrail: an inward
+    entry cannot be cancelled if its material was already dispatched."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if e.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Entry is already cancelled")
+
+    if e.get("direction") == "inward":
+        for li in e.get("line_items") or []:
+            avail = await _group_available_pieces(li["thickness_mm"], li["width_mm"], li["length_mm"], li.get("grade"))
+            remaining = avail - li["pieces"]
+            if remaining < -1e-9:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot cancel: only {avail} pcs remain for {li['thickness_mm']}×{li['width_mm']}×{li['length_mm']} — {li['pieces'] - avail:.0f} pcs already dispatched. Correct those outward entries first.",
+                )
+
+    await db.entries.update_one({"id": entry_id}, {"$set": {
+        "status": "cancelled",
+        "cancel_reason": body.reason,
+        "cancelled_at": now_utc(),
+        "cancelled_by": user["id"],
+        "cancelled_by_name": user.get("name"),
+    }})
+    await _push_history(entry_id, [{
+        "field": "status", "old": e.get("status") or "active", "new": "cancelled" + (f" — {body.reason}" if body.reason else ""),
+        "by": user["id"], "by_name": user.get("name"), "by_role": user.get("role"), "at": now_utc(),
+    }])
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    e = await _enrich_entry(e, user)
+    return EntryOut(**e)
+
+
+@api_router.post("/entries/{entry_id}/restore", response_model=EntryOut)
+async def restore_entry(entry_id: str, user: dict = Depends(require_role("admin"))):
+    """Undo a soft-delete. Guardrail: restoring an outward entry needs enough stock."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if e.get("status") != "cancelled":
+        raise HTTPException(status_code=400, detail="Entry is not cancelled")
+
+    if e.get("direction") == "outward":
+        for li in e.get("line_items") or []:
+            avail = await _group_available_pieces(li["thickness_mm"], li["width_mm"], li["length_mm"], li.get("grade"))
+            if li["pieces"] > avail + 1e-9:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot restore: only {avail} pcs in stock for {li['thickness_mm']}×{li['width_mm']}×{li['length_mm']}",
+                )
+
+    await db.entries.update_one({"id": entry_id}, {"$set": {"status": "active"}, "$unset": {"cancel_reason": "", "cancelled_at": "", "cancelled_by": "", "cancelled_by_name": ""}})
+    await _push_history(entry_id, [{
+        "field": "status", "old": "cancelled", "new": "active (restored)",
+        "by": user["id"], "by_name": user.get("name"), "by_role": user.get("role"), "at": now_utc(),
+    }])
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    e = await _enrich_entry(e, user)
+    return EntryOut(**e)
+
+
 # ---------- Daily Physical Verification (Tally) ----------
 DAILY_TALLY_COUNT = 2
 
@@ -1069,6 +1155,7 @@ async def _group_available_pieces(t: float, w: float, l: float, grade: Optional[
     pipeline = [
         {"$unwind": "$line_items"},
         {"$match": {
+            "status": {"$ne": "cancelled"},
             "line_items.thickness_mm": t, "line_items.width_mm": w,
             "line_items.length_mm": l, "line_items.grade": grade,
         }},
@@ -1087,6 +1174,7 @@ async def _group_available_pieces(t: float, w: float, l: float, grade: Optional[
 async def _stock_groups_with_meta() -> List[dict]:
     """All inventory groups with stock > 0, annotated with last verification time."""
     pipeline = [
+        {"$match": {"status": {"$ne": "cancelled"}}},
         {"$unwind": "$line_items"},
         {"$group": {
             "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm",
@@ -1366,6 +1454,7 @@ async def full_edit_entry(entry_id: str, body: EntryFullEdit, user: dict = Depen
     e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
     if not e:
         raise HTTPException(status_code=404, detail="Entry not found")
+    _ensure_not_cancelled(e)
 
     provided = body.dict(exclude_unset=True)
     if not provided:
@@ -1398,6 +1487,7 @@ async def full_edit_entry(entry_id: str, body: EntryFullEdit, user: dict = Depen
                     {"$unwind": "$line_items"},
                     {"$match": {
                         "id": {"$ne": entry_id},
+                        "status": {"$ne": "cancelled"},
                         "line_items.thickness_mm": li["thickness_mm"], "line_items.width_mm": li["width_mm"],
                         "line_items.length_mm": li["length_mm"], "line_items.grade": li["grade"],
                     }},
@@ -1475,6 +1565,7 @@ async def get_vehicle(plate: str, user: dict = Depends(current_user)):
 @api_router.get("/inventory", response_model=List[InventoryGroup])
 async def inventory(user: dict = Depends(current_user)):
     pipeline = [
+        {"$match": {"status": {"$ne": "cancelled"}}},
         {"$unwind": "$line_items"},
         {
             "$group": {
@@ -1544,7 +1635,7 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     start = today - timedelta(days=days - 1)
 
     daily_pipe = [
-        {"$match": {"created_at": {"$gte": start}}},
+        {"$match": {"created_at": {"$gte": start}, "status": {"$ne": "cancelled"}}},
         {"$group": {
             "_id": {
                 "day": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}},
@@ -1595,7 +1686,7 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
 
     # Top parties (outward with party_name)
     party_pipe = [
-        {"$match": {"direction": "outward", "party_name": {"$ne": None}, "created_at": {"$gte": start}}},
+        {"$match": {"direction": "outward", "party_name": {"$ne": None}, "created_at": {"$gte": start}, "status": {"$ne": "cancelled"}}},
         {"$group": {"_id": "$party_name", "pieces": {"$sum": "$pieces"},
                      "weight": {"$sum": "$theoretical_weight_kg"}, "count": {"$sum": 1}}},
         {"$sort": {"weight": -1}},
@@ -1612,7 +1703,7 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
 
     # Top brokers
     broker_pipe = [
-        {"$match": {"direction": "outward", "broker_name": {"$ne": None}, "created_at": {"$gte": start}}},
+        {"$match": {"direction": "outward", "broker_name": {"$ne": None}, "created_at": {"$gte": start}, "status": {"$ne": "cancelled"}}},
         {"$group": {"_id": "$broker_name", "pieces": {"$sum": "$pieces"},
                      "weight": {"$sum": "$theoretical_weight_kg"}, "count": {"$sum": 1}}},
         {"$sort": {"weight": -1}},
@@ -1628,12 +1719,13 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
         })
 
     # Pending office count
-    pending = await db.entries.count_documents({"invoice_no": {"$in": [None, ""]}})
+    pending = await db.entries.count_documents({"invoice_no": {"$in": [None, ""]}, "status": {"$ne": "cancelled"}})
     total_entries = await db.entries.count_documents({})
 
     # Low-stock groups (<= threshold, >0 available) + reorder suggestion
     threshold = float(await _get_setting("low_stock_threshold_pcs", LOW_STOCK_DEFAULT_PCS))
     stock_pipe = [
+        {"$match": {"status": {"$ne": "cancelled"}}},
         {"$unwind": "$line_items"},
         {"$group": {
             "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm", "l": "$line_items.length_mm", "g": "$line_items.grade"},
@@ -1645,7 +1737,7 @@ async def analytics_summary(days: int = 7, user: dict = Depends(current_user)):
     # 28-day consumption for weekly average
     consumption_cutoff = now_utc() - timedelta(days=28)
     consumption_pipe = [
-        {"$match": {"direction": "outward", "created_at": {"$gte": consumption_cutoff}}},
+        {"$match": {"direction": "outward", "created_at": {"$gte": consumption_cutoff}, "status": {"$ne": "cancelled"}}},
         {"$unwind": "$line_items"},
         {"$group": {
             "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm", "l": "$line_items.length_mm", "g": "$line_items.grade"},
@@ -1714,7 +1806,7 @@ async def export_csv(
         "Entry No.", "Direction", "Date", "Thickness (mm)", "Width (mm)", "Length (mm)",
         "Pieces", "Grade", "Vehicle No.", "Broker", "Theoretical Wt (kg)", "Actual Wt (kg)",
         "Variance %", "Flagged", "Invoice No.", "Party Name", "Rate (Rs)", "Payment Terms",
-        "Remarks", "Office Remarks", "Created By",
+        "Remarks", "Office Remarks", "Created By", "Status",
     ])
     user_cache: dict = {}
     async for e in db.entries.find(q, {"_id": 0}).sort("created_at", -1):
@@ -1746,6 +1838,7 @@ async def export_csv(
             e.get("remarks") or "",
             e.get("office_remarks") or "",
             user_cache.get(uid, "Unknown"),
+            e.get("status") or "active",
         ])
 
     buf.seek(0)
@@ -2259,7 +2352,7 @@ async def generate_party_statement(
 
     entries = []
     async for e in db.entries.find(
-        {"party_name": party, "created_at": {"$gte": start, "$lte": end}},
+        {"party_name": party, "created_at": {"$gte": start, "$lte": end}, "status": {"$ne": "cancelled"}},
         {"_id": 0},
     ).sort("created_at", 1):
         entries.append(e)
@@ -2431,7 +2524,7 @@ async def parties_ledger(user: dict = Depends(require_role("admin", "office"))):
     """Per-party rollup used by the office web portal:
     total outward entries, pieces, weight, invoiced count, pending-office count, last activity."""
     pipeline = [
-        {"$match": {"direction": "outward", "party_name": {"$nin": [None, ""]}}},
+        {"$match": {"direction": "outward", "party_name": {"$nin": [None, ""]}, "status": {"$ne": "cancelled"}}},
         {"$group": {
             "_id": "$party_name",
             "entries": {"$sum": 1},

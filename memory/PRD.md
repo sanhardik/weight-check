@@ -56,6 +56,12 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 15 — Entry Soft-Delete (shipped)
+- **Admin cancel/restore**: `POST /api/entries/{id}/cancel {reason?}` + `/restore` (admin only). Cancelled entries stay in DB + lists + CSV (new `Status` column) with full audit, but are excluded from ALL math: inventory, stock guardrails, FIFO, tally picking, analytics, ledger, party statements.
+- **Guardrails**: inward cancel blocked if material already dispatched (400 with count); outward restore blocked if stock insufficient; mutations (correction/office/full-edit/slip-attach) on cancelled entries → 400 until restored.
+- **UI**: mobile entry detail — grey CANCELLED banner (by/at/reason), admin cancel block with reason input + confirm, RESTORE button; edit forms + slip add/replace locked while cancelled; lists show "✕ CANCELLED"/"✕ CXL" badges, dimmed rows. Same on office portal with role gating (office views, only admin cancels).
+- Verified: 11/11 new tests, 235/236 regression (1 known xdist flake), full mobile + portal E2E.
+
 ## Iteration 14 — Bulk Opening Stock Tool (shipped)
 - **Dedicated opening-stock loader** (`src/screens/OpeningStockForm.tsx`, shared): spreadsheet-style rows (catalog dropdowns + pieces + live ≈kg per row), "+ ADD ANOTHER ITEM", **paste-from-Excel** box (tab/comma rows: Thickness, Width, Length, Grade?, Pieces — bad rows reported and skipped), live totals bar, backdatable entry date. One click → single auditable INWARD entry (vehicle `OPENING-STOCK`, remarks "Opening stock bulk load — N items") via existing `/entries/inward`.
 - Available at `/opening-stock` (mobile, admin-only tile) and `/office/opening-stock` (portal sidebar, office+admin). Portal submit lands on `/office/inventory`.
