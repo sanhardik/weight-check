@@ -53,6 +53,9 @@ export default function Home() {
     tiles.push({ testID: "tile-inward", en: "INWARD", hi: "आवक", href: "/inward", bg: colors.brand, fg: colors.onBrand, sub: "+ ADD MATERIAL" });
     tiles.push({ testID: "tile-outward", en: "OUTWARD", hi: "जावक", href: "/outward", bg: colors.surfaceInverse, fg: colors.onSurfaceInverse, sub: "- SEND MATERIAL" });
   }
+  if (user.role === "admin") {
+    tiles.push({ testID: "tile-opening-stock", en: "OPENING STOCK", hi: "आरंभिक स्टॉक", href: "/opening-stock", bg: colors.surfaceTertiary, fg: colors.onSurface, sub: "BULK LOAD INITIAL INVENTORY" });
+  }
   if (user.role === "admin" || user.role === "office") {
     tiles.push({ testID: "tile-entries", en: "ENTRIES", hi: "एंट्री सूची", href: "/entries", bg: colors.surface, fg: colors.onSurface, sub: "VIEW · EDIT · EXPORT" });
     tiles.push({ testID: "tile-verifications", en: "VERIFICATION LOG", hi: "जाँच रजिस्टर", href: "/verifications", bg: colors.surface, fg: colors.onSurface, sub: "TALLY HISTORY · REVIEW · ASSIGN" });

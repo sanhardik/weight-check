@@ -10,6 +10,7 @@ type NavItem = { href: string; label: string; icon: string };
 const NAV: NavItem[] = [
   { href: "/office", label: "Dashboard", icon: "▦" },
   { href: "/office/entries", label: "Entries", icon: "≣" },
+  { href: "/office/opening-stock", label: "Opening Stock", icon: "⬆" },
   { href: "/office/parties", label: "Parties", icon: "⊕" },
   { href: "/office/inventory", label: "Inventory", icon: "□" },
   { href: "/office/verifications", label: "Verifications", icon: "✓" },
@@ -57,7 +58,7 @@ export default function OfficeLayout() {
           return (
             <Pressable
               key={n.href}
-              testID={`office-nav-${n.label.toLowerCase()}`}
+              testID={`office-nav-${n.label.toLowerCase().replace(/\s+/g, "-")}`}
               onPress={() => router.push(n.href as any)}
               style={({ pressed }) => [
                 wide ? s.navItem : s.navItemCompact,

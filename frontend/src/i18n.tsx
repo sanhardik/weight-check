@@ -91,6 +91,7 @@ const D: Dict = {
   tally_note: { en: "Note (optional)", hi: "टिप्पणी (वैकल्पिक)" },
   take_photo_item: { en: "TAKE PHOTO OF ITEM", hi: "आइटम का फोटो लें" },
   search_entries: { en: "Search · entry no · vehicle · invoice · party", hi: "खोजें · एंट्री · गाड़ी · इनवॉइस · पार्टी" },
+  opening_stock: { en: "OPENING STOCK", hi: "आरंभिक स्टॉक" },
 };
 
 type I18n = {

@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 14 — Bulk Opening Stock tool verified end-to-end. Backend: new test_steeltrack_iter14_opening_stock.py 11/11 PASS (vehicle OPENING-STOCK, remarks, line_items count, backdated entry_date=yesterday, inventory aggregation deltas, entries search 'OPENING', empty-payload 400). Full regression 224/225 (1 known LLM-vision flake in iter9 slip test, passes standalone). Portal (1366x820): office login → sidebar 'Opening Stock' (between Entries/Parties ✓) → paste 3 rows incl missing-grade → toast 'Imported 3 rows' → 3 cards with dropdown values + per-row ≈kg → summary '3 items · 63 pcs · ≈45137.5 kg' → submit → toast 'Opening stock saved: INW-20261002-0945 — 3 items, 63 pcs' → /office/inventory shows new groups. Bad-row paste: toast 'Imported 2 rows · skipped 1 bad rows (2)', only valid cards rendered. Partial row (thickness only) not counted in summary. 0-row submit blocked (BButton onPress=undefined, opacity 0.5). Mobile (390x844): admin → OPENING STOCK tile → form (date prefilled today, catalog dropdowns populated: 11 thickness/35 grade opts) → 2 manual rows → submit → toast INW-20261002-0946 → /inventory. Role gating: labour + office on mobile /opening-stock both redirect to /home; neither sees the tile.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/upload/vision (iter9 test)", "issue": "test_real_slip_image_extracts_weight_and_vehicle failed once in full parallel run, passes standalone — known LLM-vision flake, not related to opening stock"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Entries screen", "issue": "React duplicate-key console error ('Encountered two children with the same key') at /entries surfaces as a red error banner in dev build; pre-existing, not caused by opening stock. keyExtractor uses e.id (uuid) so source is likely a sub-component or stale duplicate data", "testID": "entries-list", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "office/_layout sidebar", "issues": ["testID 'office-nav-opening stock' contains a space (derived from label.toLowerCase()); works on web but fragile — suggest slugifying, e.g. office-nav-opening-stock"]}
+    ],
+    "react_native_issues": [
+      {"component": "React Native Web", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — some component passes pointerEvents as a prop; migrate to style.pointerEvents (warning seen on /office/login)"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter14_opening_stock.py",
+    "/app/test_reports/pytest/pytest_results_iter14.xml",
+    "/app/test_reports/pytest/pytest_results_iter14_full.xml"
+  ],
+  "action_items": [
+    "Fix duplicate React key warning on /entries (identify offending list; error text says keys non-unique)",
+    "Slugify office sidebar testIDs (replace space in 'office-nav-opening stock')",
+    "Migrate pointerEvents prop to style.pointerEvents (RN web deprecation)",
+    "Housekeeping (optional): inventory grade filter chips polluted with legacy test grades (FIFO-GRD-*, ITER4_*, TEST_*) from past iterations — consider cleanup or filter to catalog grades"
+  ],
+  "critical_code_review_comments": [
+    "OpeningStockForm paste parser: for >=5 cells, grade=nums[3] is accepted without numeric check — input '8,1250,2500,2500,40' silently stores grade='2500'. Minor; consider validating grade is non-numeric.",
+    "entry_date is not validated before new Date(...).toISOString(); invalid input throws RangeError caught by generic catch → error toast. Acceptable but a friendlier inline validation would help.",
+    "REMOVE hidden when rows.length===1 means user can never delete the last card; clearing fields is the only way back to 0 items. Matches spec (submit disabled at 0) — OK."
+  ],
+  "updated_files": ["/app/backend/tests/test_steeltrack_iter14_opening_stock.py"],
+  "success_rate": {"backend": "99.6% (224/225 full suite; 11/11 new opening-stock tests)", "frontend": "100% (portal E2E, bad-row, partial-row, 0-row, mobile admin E2E, role gating all pass)"},
+  "seed_data_creation": "Created opening-stock entries via API (vehicle OPENING-STOCK, dims 13x1167x4873 TEST_IS2062 x11, 17x1333x5111 x7, 23x1499x6333 TEST_E350 x5, remarks prefixed TEST_, backdated yesterday) + 1 labour inward TEST-LABOUR-INW; plus UI-created INW-20261002-0945 (portal: 16x1250x2500 IS2062 x40, 20x1500x3000 E350 x15, 25x2000x6000 x8) and INW-20261002-0946 (mobile admin: 2 catalog rows, 16 pcs)",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Opening Stock fully working on both surfaces. Portal quick-login buttons only fill fields — must also click office-login-submit. BInput/BButton testIDs are on the input/pressable element itself (use input[data-testid=...] / textarea[data-testid=...]). Sidebar nav testID for opening stock contains a space: 'office-nav-opening stock'. Full suite: expect ~225 tests; iter9 vision test is flaky under xdist only.",
+  "rca_of_issue": "No defects in the Opening Stock feature itself. Only observed issue: React duplicate-key console error at /entries (pre-existing) — reproduces on navigating to entries/inventory in dev build, appears as red banner; root cause not yet isolated to a specific list component."
+}

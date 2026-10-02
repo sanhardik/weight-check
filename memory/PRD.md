@@ -56,6 +56,11 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 14 — Bulk Opening Stock Tool (shipped)
+- **Dedicated opening-stock loader** (`src/screens/OpeningStockForm.tsx`, shared): spreadsheet-style rows (catalog dropdowns + pieces + live ≈kg per row), "+ ADD ANOTHER ITEM", **paste-from-Excel** box (tab/comma rows: Thickness, Width, Length, Grade?, Pieces — bad rows reported and skipped), live totals bar, backdatable entry date. One click → single auditable INWARD entry (vehicle `OPENING-STOCK`, remarks "Opening stock bulk load — N items") via existing `/entries/inward`.
+- Available at `/opening-stock` (mobile, admin-only tile) and `/office/opening-stock` (portal sidebar, office+admin). Portal submit lands on `/office/inventory`.
+- Verified: 11/11 new backend tests (incl. backdate + inventory deltas + search), 224/225 regression (known vision flake), paste import, role gating, mobile + portal E2E.
+
 ## Iteration 13 — Native Upload Bug Fix (shipped)
 - **Bug**: On real phones (Expo Go / builds), photo upload crashed with "Unsupported FormData implementation" — Expo's winter `expo/fetch` runtime cannot convert React Native FormData.
 - **Fix**: native uploads now bypass FormData entirely — base64 JSON instead. New endpoints: `POST /api/upload/base64`, `POST /api/vision/weight/path` (JSON), `POST /api/voice/transcribe/base64`. Shared `_store_upload` / `_transcribe_audio` helpers keep both paths identical. Frontend `uploadImageAsset(asset, token)` helper in `src/auth.tsx` picks multipart on web, base64 on native; swapped in EntryForm, verify, entry detail, office portal; VoiceInput native branch converted too; EntryForm OCR uses the JSON path route.
