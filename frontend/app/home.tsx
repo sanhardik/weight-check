@@ -26,24 +26,35 @@ export default function Home() {
   const { user, token, logout } = useAuth();
   const { t, lang } = useI18n();
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [tally, setTally] = useState<{ done: number; total: number } | null>(null);
 
   const showAnalytics = user && (user.role === "admin" || user.role === "office");
+  const showTally = user && (user.role === "labour" || user.role === "admin");
 
   useEffect(() => {
     if (!showAnalytics || !token) return;
     apiFetch("/analytics/summary?days=7", {}, token).then(setAnalytics).catch(() => setAnalytics(null));
   }, [showAnalytics, token]);
 
+  useEffect(() => {
+    if (!showTally || !token) return;
+    apiFetch("/verifications/today", {}, token)
+      .then((d) => setTally({ done: d.done || 0, total: d.total || 0 }))
+      .catch(() => setTally(null));
+  }, [showTally, token]);
+
   if (!user) return <Redirect href="/login" />;
 
   const tiles: Tile[] = [];
   if (user.role === "labour" || user.role === "admin") {
     tiles.push({ testID: "tile-mukadam", en: "WAREHOUSE KEEPER", hi: "मुकादम", href: "/mukadam", bg: colors.brandTertiary, fg: colors.onSurface, sub: "SELECT YOUR NAME" });
+    tiles.push({ testID: "tile-tally", en: "DAILY TALLY", hi: "आज की गिनती", href: "/verify", bg: colors.surfaceTertiary, fg: colors.onSurface, sub: "PHYSICAL VERIFICATION + PHOTO" });
     tiles.push({ testID: "tile-inward", en: "INWARD", hi: "आवक", href: "/inward", bg: colors.brand, fg: colors.onBrand, sub: "+ ADD MATERIAL" });
     tiles.push({ testID: "tile-outward", en: "OUTWARD", hi: "जावक", href: "/outward", bg: colors.surfaceInverse, fg: colors.onSurfaceInverse, sub: "- SEND MATERIAL" });
   }
   if (user.role === "admin" || user.role === "office") {
     tiles.push({ testID: "tile-entries", en: "ENTRIES", hi: "एंट्री सूची", href: "/entries", bg: colors.surface, fg: colors.onSurface, sub: "VIEW · EDIT · EXPORT" });
+    tiles.push({ testID: "tile-verifications", en: "VERIFICATION LOG", hi: "जाँच रजिस्टर", href: "/verifications", bg: colors.surface, fg: colors.onSurface, sub: "TALLY HISTORY · REVIEW · ASSIGN" });
     tiles.push({ testID: "tile-settings", en: "SETTINGS · CATALOG", hi: "सेटिंग्स", href: "/settings", bg: colors.surfaceSecondary, fg: colors.onSurface, sub: "BROKERS · MUKADAMS · GRADES · DIMENSIONS" });
   }
   tiles.push({ testID: "tile-inventory", en: "INVENTORY", hi: "स्टॉक स्थिति", href: "/inventory", bg: colors.surfaceSecondary, fg: colors.onSurface, sub: "LIVE STOCK" });
@@ -59,6 +70,21 @@ export default function Home() {
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + spacing.xl, gap: spacing.md }} testID="home-scroll">
         <Text style={s.greet}>HI, {user.name.toUpperCase()}</Text>
         <Text style={s.greetSub}>{t("select_action")}</Text>
+
+        {showTally && tally && tally.total > 0 ? (
+          <Pressable
+            testID="tally-card"
+            onPress={() => router.push("/verify")}
+            style={[s.tallyCard, { backgroundColor: tally.done >= tally.total ? colors.success : colors.warning }]}
+          >
+            <Text style={s.tallyTitle}>
+              {tally.done >= tally.total ? "✓" : "📋"} {t("daily_tally")} · आज की गिनती — {tally.done}/{tally.total} DONE
+            </Text>
+            <Text style={s.tallySub}>
+              {tally.done >= tally.total ? "All items physically verified today" : "Tap to physically count & upload photo proof →"}
+            </Text>
+          </Pressable>
+        ) : null}
 
         {showAnalytics ? (
           <View testID="analytics-card" style={s.analytics}>
@@ -251,6 +277,9 @@ const s = StyleSheet.create({
   topWeight: { fontSize: 13, fontWeight: "900", color: colors.onSurface },
 
   grid: { gap: spacing.md, marginTop: spacing.sm },
+  tallyCard: { padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, marginBottom: spacing.xs },
+  tallyTitle: { fontSize: 14, fontWeight: "900", letterSpacing: 1, color: colors.onWarning },
+  tallySub: { fontSize: 11, fontWeight: "700", color: colors.onWarning, marginTop: 4, opacity: 0.9 },
   tile: { minHeight: 110, padding: spacing.lg, borderWidth: 1.5, borderColor: colors.borderStrong, justifyContent: "space-between" },
   tileHi: { fontSize: 28, fontWeight: "900", letterSpacing: 0.5 },
   tileEn: { fontSize: 20, fontWeight: "900", letterSpacing: 2, marginTop: 2 },

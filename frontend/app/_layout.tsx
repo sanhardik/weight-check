@@ -12,6 +12,7 @@ import { queryClient } from "@/src/query-client";
 import { AuthProvider } from "@/src/auth";
 import { I18nProvider, useI18n } from "@/src/i18n";
 import { ToastHost } from "@/src/ui/Toast";
+import { TallyReminder } from "@/src/ui/TallyReminder";
 import { colors, appFontFamily } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);
@@ -81,12 +82,13 @@ patchComponent(TextInput);
 
 function FontDefaults({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { lang } = useI18n();
-  useEffect(() => {
-    if (!fontsLoaded) return;
+  // Must run synchronously during render (not in useEffect): effects fire after
+  // the tree has already rendered, leaving every screen one language-toggle stale.
+  if (fontsLoaded) {
     const family = appFontFamily(lang);
     (Text as any).__currentFont = family;
     (TextInput as any).__currentFont = family;
-  }, [lang, fontsLoaded]);
+  }
   return null;
 }
 
@@ -101,6 +103,7 @@ export default function RootLayout() {
             <AuthProvider>
               <I18nProvider>
                 <FontDefaults fontsLoaded={loaded} />
+                <TallyReminder />
                 <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }} />
                 <ToastHost />
               </I18nProvider>

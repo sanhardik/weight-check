@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 11 (Office Portal + Persistent Tally Reminder) full-stack verification. BACKEND new iter11 suite 6/6 PASS covering GET /api/parties/ledger: admin=200 list, office=200 list, labour=403, no-auth 401/403, row shape (name/entries/pieces/weight/invoiced/pending_office/last_at/whatsapp/whatsapp_digits), and sort order (pending_office>0 group first, within group last_at desc). FULL REGRESSION 192/192 effective (191 pass + 1 flaky parallel race: test_steeltrack_new_features.py::test_analytics_reflects_new_inward — unrelated to iter11, passes in isolation; already present in prior iterations; concurrent inward inserts across xdist workers inflate today's totals delta past the ~2kg tolerance). FRONTEND (desktop 1366x820): /office/login card renders with HEMANT ENTERPRISE / OFFICE PORTAL branding + demo quick-login tiles; OFFICE quick-login + SIGN IN → auto-redirects to /office dashboard. Dashboard shows Inward today (262036.3 kg · 1582.5 pieces), Outward today (23600.0 kg · 212 pieces), Pending office 928 'Click to review →', Tally mismatches 0, Top parties 7D column (5 rows), Low stock column (5 rows). /office/entries renders table with headers ENTRY#/TYPE/DIMENSIONS/PCS/WEIGHT/VEHICLE/PARTY/STATUS/DATE, 200 rows, filter chips ALL/INWARD/OUTWARD/PENDING OFFICE/FLAGGED (lowercase direction testids office-filter-inward etc.), search by vehicle 'MH00ANA' filters to 3 rows, row click opens /office/entries/[uuid] detail: banner 'INWARD · आवक INW-20261002-0436 PENDING' + facts (date/vehicle/driver/mukadam/theoretical/actual/variance/created-by/line-items) LEFT + office-details form (invoice/party/rate/terms/remarks) + SAVE DETAILS + email invoice PDF + Correct entry form (actual weight/pieces/vehicle) RIGHT + '← Back to Entries'. /office/parties shows KPIs + search + table with INVOICED/PENDING columns. /office/inventory shows grade chips + search + LAST VERIFIED column. /office/verifications as office = NO review buttons; as admin = APPROVE/REJECT visible on today's pending-review rows (2 approve + 2 reject = 2 pending). /office/reports renders. Office at '/' → auto-redirects to /office (Index logic: user.role==='office' && Platform.web). Labour attempting /office/login (filled creds + submit) → lands at /home; labour direct nav /office/entries → redirected to /home (OfficeLayout guard). FRONTEND (mobile 390x844) tally banner: after clearing today's verification_tasks server-side, labour login → /home shows red banner '⚠ DAILY TALLY · 2 ITEMS PENDING — TAP TO COMPLETE →' (testid=tally-reminder-banner). Banner present on /home, /inventory, /inward, /outward, /mukadam. Banner HIDDEN on /verify. Tap → routes to /verify. Marking both tasks submitted → return to /home → banner auto-hides (replaced by green '✓ DAILY TALLY — 2/2 DONE · All items physically verified today' home-card). All required flows passed; NO critical issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/analytics/summary (pre-existing)", "issue": "test_analytics_reflects_new_inward is flaky under pytest-xdist parallel: it fetches today's totals, inserts one 157kg inward, re-fetches and asserts delta≈157. Concurrent inserts in sibling workers inflate the delta past the ±2kg tolerance. Passes 100% in isolation. Not caused by iter11 — same flake present prior. Non-blocking."},
+      {"endpoint": "POST /api/verifications/{id}/submit", "issue": "When physical_pieces is sent as a plain string value in form-data (e.g. a sample 1x1 PNG blob + '1'), backend returns 500 instead of a 422 — the FastAPI validation error itself fails to JSON-encode because exc.errors() contains the raw photo bytes (UnicodeDecodeError 'utf-8 codec can't decode byte 0x89'). Repro: fetch /api/verifications/{id}/submit with FormData(physical_pieces='1', photo=<1x1 PNG blob>). Expected: 422 with field errors. Observed: 500 Internal Server Error. Likely the pydantic validation serializes a bytes field with ctx values. Does not affect normal UI flows (expo-image-picker upload goes through fine) but worth hardening."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter11_office.py",
+    "/app/test_reports/pytest/pytest_results_iter11.xml",
+    "/app/test_reports/pytest/pytest_results_iter11_full.xml"
+  ],
+  "action_items": [
+    "Optional hardening: in POST /api/verifications/{id}/submit, catch pydantic validation errors on multipart form fields so the 422 handler does not blow up when the photo bytes end up in exc.errors().ctx. Right now bad client input (non-numeric physical_pieces, missing field, etc.) returns 500 instead of 422.",
+    "Note (pre-existing, non-blocking): mark test_analytics_reflects_new_inward with @pytest.mark.serial or raise the kg tolerance (±200 kg) so pytest-xdist does not false-fail on same-day concurrent inward inserts."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~2655 lines — well past the 700 guideline. Split into entries/verifications/catalog/parties/office modules.",
+    "GET /parties/ledger aggregation is clean (outward-only, groups by party_name) and the sort key uses a stable timestamp fallback so parties with no last_at don't crash sorting. Shape matches the office portal expectations exactly.",
+    "OfficeLayout correctly allows unauth access only on /office/login (early return before auth guard) and redirects labour → /home. OfficeLogin's Redirect on user re-render handles the labour→/home case even if labour successfully auths via that card.",
+    "TallyReminder is mounted ABOVE <Stack> in the root layout — effectively a global sticky top banner on every stack screen, auto-hides on /verify via pathname check and when done>=total via comparison. 30s polling + navigation-triggered refetch confirmed.",
+    "app/index.tsx redirect: office+web → /office is correct; office on native still goes to /home (expected per spec). No deprecated expo packages. testID coverage excellent on all new office screens."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter11_office.py (new, 6 tests covering /api/parties/ledger)"
+  ],
+  "success_rate": {
+    "backend": "100% iter11 (6/6); 191/192 full regression (1 pre-existing flaky under parallel execution — passes in isolation)",
+    "frontend": "100% — every requested office portal + tally reminder flow verified E2E on desktop (1366x820) and mobile (390x844)"
+  },
+  "seed_data_creation": "Deleted today's (2026-10-02) verification_tasks (3 rows) to force 2 pending auto-create for tally-banner test, then flipped both to status=submitted to verify auto-hide. No persistent seed data created. Reusable test file: test_steeltrack_iter11_office.py.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 11 Office Portal + Tally Reminder: all pass. Backend ledger endpoint is sort-stable (pending_office>0 first, then last_at desc with None fallback). Frontend testids for office portal: office-login-card, office-login-email, office-login-password, office-login-submit, office-quick-office, office-quick-admin, office-nav-{dashboard|entries|parties|inventory|verifications|reports}, office-logout, office-filter-{all|inward|outward|pending|flagged}, office-search, office-row-{entry_number}, office-export-csv. Tally banner testid: tally-reminder-banner. For tally testing, delete today's verification_tasks and re-login as labour → banner appears; set those tasks status='submitted' to simulate completion → banner auto-hides. The POST /verifications/{id}/submit via fetch with a FormData blob returns 500 instead of 422 for malformed input — don't try to script-submit; use the real UI (expo-image-picker file chooser) or the pattern in test_steeltrack_iter10_tally.py.",
+  "rca_of_issue": "No bugs required a fix this iteration. Two minor observations: (1) /verifications/{id}/submit 500→422 regression — JSON encoder cannot decode photo bytes present in a pydantic error ctx; patch is to swap FastAPI's default validation handler for one that pre-sanitizes exc.errors() with jsonable_encoder on exc.errors() with custom_encoder={bytes: lambda b: f'<{len(b)} bytes>'}. (2) Analytics flake under xdist is a tolerance/scope issue, not a product bug."
+}

@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 10 (Feature A: Daily Physical Tally + Admin Full Edit) full-stack testing. BACKEND 100%: new iter10 suite 33/33 PASS (today auto-create exactly 2 + idempotent + snapshot==live stock; assign admin-only/replaces pending/>2->400; submit photo-mandatory 400, match/mismatch+discrepancy, resubmit 400, unknown 404, inventory_meta last_verified_* visible via GET /api/inventory; review approve/reject/apply_correction with outward PHYSICAL-TALLY/'Stock Correction' entry reducing stock exactly by discrepancy, second review 400, office/labour 403; history admin+office OK labour 403; full-edit scalars WAS->NOW history, line_items recompute pieces+theoretical weight+variance, outward stock guardrail 400, office/labour 403). FULL REGRESSION 186/186 PASS (153 legacy incl. iter9 slip + 33 new). FRONTEND: labour DAILY TALLY card -> /verify blind count (system pieces hidden pre-submit, verified), gallery photo upload (real file via file chooser) -> submit -> MATCHED banner with reveal; second task -> MISMATCH banner (system 5 vs physical 3, SUBMITTED). Admin VERIFICATION LOG tile -> /verifications: today rows, pending-review pill, history cards with system-vs-physical + status chips, photo loads (naturalWidth 400); APPLY STOCK CORRECTION via UI -> toast 'Stock corrected via OUT-20261002-0085' + card flips to CORRECTION APPLIED with correction entry link; UI assign flow (2 dropdowns + ASSIGN) replaced today's pending auto-picks and /verify shows ADMIN tags. Admin full-edit UI: block collapsed by default, toggle expands, vehicle+remarks+line pieces edit -> SAVE -> toast, persists after reload, EDIT HISTORY shows WAS->NOW incl. LINE_ITEMS rows. Inventory shows '✓ Verified <date> · <name>'. Office: read-only verifications (no assign block, no review buttons), no admin-edit-block. TWO bugs found & FIXED by tester: (1) CRITICAL red screen 'Rendered more hooks than during the previous render' on /entries — useState(reportOpen) placed AFTER the `if (!user) return <Redirect>` early return in app/entries.tsx:57; moved hook above the return, verified entries loads for office/admin. (2) HIGH Hindi Poppins never applied even after main agent's render-patch: FontDefaults set Text.__currentFont in useEffect, which fires AFTER the re-render triggered by the language toggle, leaving fonts stale by one render; moved the assignment into render body — measured computed fontFamily of Devanagari = 'Poppins' on login toggle AND fresh home mount. NOTE: tally mismatch alert emails fail in this environment (Resend 422 undeliverable recipient for @steeltrack.com test domain) — handled softly by design, submit unaffected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/verifications/assign", "issue": "When today's submitted/kept tasks already >= 2, assign silently inserts nothing but returns 200 — UI then toasts 'Today's tally items assigned' although nothing changed. Consider returning a warning/flag when 0 tasks were added."},
+      {"endpoint": "POST /api/verifications/{id}/review", "issue": "apply_correction on a matched (0 discrepancy) verification silently becomes 'approved' — acceptable but undocumented edge."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "app/entries.tsx (FIXED by tester)", "issue": "RED SCREEN 'Rendered more hooks than during the previous render': const [reportOpen] = useState(false) was declared AFTER `if (!user) return <Redirect>` (line 57) — hooks-order violation crashed /entries whenever the screen mounted before auth context resolved. Moved the hook above the early return; verified /entries loads as office + admin. Reference: /app/frontend/app/entries.tsx:57", "testID": "tile-entries", "priority": "CRITICAL"},
+      {"component": "FontDefaults in app/_layout.tsx (FIXED by tester)", "issue": "Main agent's React-19 render-patch for fonts was correct in mechanism (RNW 0.21 Text/TextInput are forwardRef objects with .render) but __currentFont was set inside useEffect, which runs after the lang-change re-render — Hindi text always rendered with the previous language's font (measured: system sans, never Poppins; double-toggle confirmed stale-by-one-render). Moved assignment into the component render body; measured computed fontFamily of Devanagari = 'Poppins' on toggle and on fresh screen mounts. Reference: /app/frontend/app/_layout.tsx:84-95", "testID": "lang-toggle", "priority": "HIGH"},
+      {"component": "verify.tsx photo button", "issue": "Tally photo button label reads 'TAKE PHOTO OF SLIP' (reuses take_photo i18n key) — for physical tally the photo is of counted stock, not a weighment slip. Needs a separate i18n string. Reference: /app/frontend/app/verify.tsx:184", "testID": "tally-camera-0", "priority": "MINOR"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "verifications", "issues": ["History card status chip text 'CORRECTION APPLIED' / 'SUBMITTED' renders white on colored chip — fine; but chip text may overflow very narrow screens at 320px (not seen at 375px). Non-blocking."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_steeltrack_iter10_tally.py",
+    "/app/test_reports/pytest/pytest_results_iter10.xml",
+    "/app/test_reports/pytest/pytest_results_iter10_full.xml"
+  ],
+  "action_items": [
+    "Change tally camera button copy: add i18n key (e.g. take_tally_photo = 'TAKE PHOTO OF ITEMS') instead of reusing slip wording in app/verify.tsx.",
+    "Optional: POST /verifications/assign should signal when 0 tasks were inserted (all of today's tally already submitted) so the UI can show 'nothing left to assign today'.",
+    "Optional: tally/low-stock alert emails cannot deliver to @steeltrack.com from this environment (Resend blocks undeliverable recipients) — verify email domain config before production.",
+    "Optional cleanup: 4 pre-existing lint warnings (unused vars in home/index/settings, exhaustive-deps in users.tsx)."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 2597 lines — well past the 700-line guideline; split into modules (entries, verifications, catalog, vision, analytics, email/pdf).",
+    "Verification design is sound: system_pieces snapshotted on task, recomputed at submit (blind count preserved), review apply_correction re-checks live availability before outward adjustment, single-review enforced via status transition, all role gates server-side.",
+    "full-edit correctly uses exclude_unset + field-level WAS->NOW audit rows and recomputes variance + slip mismatch when weight/vehicle change; outward guardrail excludes the entry being edited (correct).",
+    "_ensure_today_tasks stalest-pool logic (never-verified first, random 2 of stalest 6) verified indirectly: post-reset auto-picks were never-verified groups.",
+    "No deprecated Expo packages (expo-audio + expo-camera only). testID coverage excellent across all new screens.",
+    "Hooks-order bug class: audited ALL screens for hooks after early `if (!user) return` — entries.tsx was the only offender (now fixed)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_steeltrack_iter10_tally.py (new, 33 tests)",
+    "/app/frontend/app/entries.tsx (hooks-order fix: reportOpen useState moved above early return)",
+    "/app/frontend/app/_layout.tsx (FontDefaults: set __currentFont during render, not useEffect — fixes stale Hindi font)",
+    "/app/frontend/app/inventory.tsx (Group type: added last_verified_at/last_verified_by optional fields)"
+  ],
+  "success_rate": {"backend": "100% (iter10 33/33; full regression 186/186)", "frontend": "100% after 2 tester-applied fixes (entries red screen, Hindi font); all requested flows verified E2E"},
+  "seed_data_creation": "DB-inserted extra pending tally tasks (2/day API cap workaround): 4x100x1000 ITER4_HIST_be1597 (2pcs, submitted MATCHED via UI) and 3x1250x6300 E250 (5pcs, submitted MISMATCH -2 via UI, then correction applied via UI -> OUT-20261002-0085). Pytest creates TEST_IT10-* entries + verifications with uuid suffixes. Current state: today has 2 pending admin-assigned tasks (2x100x500 TEST_REG_7c4e9c / TEST_REG_238e63) from the UI assign test. Test image /tmp/tally_test.png.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All requested Feature A flows pass. Tester fixed 2 frontend bugs (entries hooks-order red screen; FontDefaults effect-vs-render stale font) — regression: (1) /entries must load for office+admin without red screen, (2) toggle lang to Hindi -> Devanagari computed fontFamily must be 'Poppins' on first toggle. pytest xdist --dist loadscope runs CLASSES in parallel across 2 workers — sequential/multi-step suites MUST live in a single class (iter10 file shows the pattern; the autouse class fixture resets today's verification_tasks so the suite is re-runnable any time of day). Tally APIs cap at 2 tasks/day — insert extra verification_tasks rows directly via pymongo (MONGO_URL/DB_NAME from backend/.env) when more pending tasks are needed for UI tests. expo-image-picker web gallery opens a native file chooser: use page.expect_file_chooser + set_files. Clicking buttons at the bottom of long tally cards needs scroll_into_view_if_needed before click.",
+  "rca_of_issue": "BUG 1 (CRITICAL, fixed): app/entries.tsx declared useState(reportOpen) after the conditional `if (!user) return <Redirect/>`. When the screen mounted while auth context was still resolving (user=null), the first render ran 3 hooks and the next ran 4 -> React 'Rendered more hooks than during the previous render' red screen. Repro: login as office -> ENTRIES tile (or direct /entries with cold auth). Fix: moved the hook above the early return; audited all other screens — clean. BUG 2 (HIGH, fixed): FontDefaults set Text.__currentFont inside useEffect; the language toggle re-renders the tree BEFORE effects run, so every screen rendered with the previous language's font family forever (stale-by-one-render). Repro: tap lang-toggle, measure computed fontFamily of any Devanagari text -> system sans, never Poppins. Fix: assign during render body (FontDefaults renders before <Stack> children in the same pass). Verified 'Poppins' computed on toggle and fresh mounts. NON-BUG (environment): tally mismatch alert emails fail with Resend 422 undeliverable_recipient for @steeltrack.com — backend catches and logs (soft alert by design); submissions unaffected."
+}

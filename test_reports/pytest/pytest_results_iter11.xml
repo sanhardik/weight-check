@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="6" failures="0" skipped="0" tests="6" time="0.870" timestamp="2026-10-02T06:25:46.861802+00:00" hostname="agent-env-57e302ea-3350-46a7-a524-47bf3493d634"><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_admin_200" time="0.484"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_office_200" time="0.000"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_labour_403" time="0.000"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_row_shape" time="0.000"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_sorted_pending_first_then_last_at_desc" time="0.000"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase><testcase classname="tests.test_steeltrack_iter11_office.TestPartiesLedger" name="test_ledger_no_auth_401_or_403" time="0.000"><error message="failed on setup with &quot;KeyError: 'access_token'&quot;">backend/tests/test_steeltrack_iter11_office.py:24: in setup_class
+    cls.admin_tok = _login("admin@steeltrack.com", "admin123")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_steeltrack_iter11_office.py:18: in _login
+    return r.json()["access_token"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'access_token'</error></testcase></testsuite></testsuites>

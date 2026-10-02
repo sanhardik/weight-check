@@ -12,6 +12,8 @@ type Group = {
   grade?: string | null;
   pieces_in: number; pieces_out: number; pieces_available: number;
   theoretical_weight_available_kg: number;
+  last_verified_at?: string | null;
+  last_verified_by?: string | null;
 };
 
 const ALL_KEY = "__ALL__";
@@ -119,6 +121,11 @@ export default function InventoryScreen() {
               <View style={{ flex: 2 }}>
                 <Text style={s.dim}>{g.thickness_mm}×{g.width_mm}×{g.length_mm}</Text>
                 {g.grade ? <Text style={s.grade}>{g.grade}</Text> : null}
+                {g.last_verified_at ? (
+                  <Text style={s.verified} testID={`verified-${g.thickness_mm}-${g.width_mm}-${g.length_mm}`}>
+                    ✓ Verified {new Date(g.last_verified_at).toLocaleDateString()}{g.last_verified_by ? ` · ${g.last_verified_by}` : ""}
+                  </Text>
+                ) : null}
               </View>
               <Text style={s.cell}>{g.pieces_in}</Text>
               <Text style={s.cell}>{g.pieces_out}</Text>
@@ -150,6 +157,7 @@ const s = StyleSheet.create({
   row: { flexDirection: "row", padding: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.border, alignItems: "center" },
   dim: { fontSize: 14, fontWeight: "900", color: colors.onSurface },
   grade: { fontSize: 10, color: colors.muted, letterSpacing: 1 },
+  verified: { fontSize: 10, color: colors.success, fontWeight: "700", marginTop: 2 },
   cell: { flex: 1, textAlign: "center", fontSize: 14, fontWeight: "700", color: colors.onSurface },
   empty: { textAlign: "center", padding: spacing.xl, color: colors.muted, fontWeight: "900", letterSpacing: 1 },
 });

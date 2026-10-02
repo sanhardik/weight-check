@@ -56,6 +56,23 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 11 — Office Web Portal + Tally Reminder (shipped)
+- **Office Web Portal** at `/office/*` — dedicated desktop-first route tree with sidebar nav (Dashboard · Entries · Parties · Inventory · Verifications · Reports) and own login at `/office/login`. Office staff never need the mobile app or Expo Go; they just open the preview URL. `app/index.tsx` auto-redirects office users on web to `/office`; labour attempting `/office/*` are redirected to `/home`. Admin can use either portal.
+  - Pages: KPI dashboard (today inward/outward kg + pending-office pile + tally-mismatch count), filterable entries table (direction chips, pending/flagged toggles, search by entry/vehicle/invoice/party/broker, CSV export), two-column entry detail (facts + office form + correction + edit history + weighment-slip image + email invoice PDF), parties ledger (per-party rollup — entries/invoiced/pending/weight/last-activity/WhatsApp deep link), live inventory table with last-verified column, verifications queue (admin review buttons), reports (CSV + Party Statement PDF).
+  - New endpoint `GET /api/parties/ledger` (admin/office) returns per-party aggregated stats sorted with pending-office rows first, then by last activity desc.
+- **Persistent tally reminder** at `src/ui/TallyReminder.tsx` — mounted globally in `app/_layout.tsx`. Red sticky banner at top of every labour-visible screen reading "⚠ DAILY TALLY · N ITEMS PENDING — TAP TO COMPLETE →"; hidden on `/verify` itself and auto-hides when done==total. Polls `/verifications/today` every 30s so the banner clears without a manual refresh.
+
+192/192 backend tests after this iteration (6 new iter11). Frontend verified E2E for desktop portal + mobile banner.
+
+## Iteration 10 — Daily Physical Tally + Admin Full Edit (shipped)
+- **Daily tally**: 2 inventory groups per day must be physically verified (pieces + mandatory photo + optional note; NO weight). Admin pre-assigns via Verification Log (dropdowns from live stock); otherwise system auto-picks 2 random groups preferring least-recently-verified (`/api/verifications/today` idempotent auto-create).
+- **Blind count**: system pieces hidden from labour until after submit. Mismatch → flagged + admins emailed (soft). Labour home shows DAILY TALLY card with x/2 progress; `/verify` screen handles the flow.
+- **Admin review** at `/verifications`: APPROVE / REJECT / APPLY STOCK CORRECTION — correction creates an inward/outward adjustment entry (vehicle `PHYSICAL-TALLY`, broker `Stock Correction`) and only then changes stock. `last_verified_at/by` stamped per group (`inventory_meta`), shown on inventory screen.
+- **Admin full edit**: `PATCH /api/entries/{id}/full-edit` — admin can change ANY field of ANY transaction (vehicle, driver, broker, mukadam, invoice, party, rate, terms, remarks, entry_date, actual weight, line_items with outward stock guardrail). All changes audit-logged. UI: collapsible "ADMIN FULL EDIT" block on entry detail.
+- Tester fixes: entries.tsx conditional-hook crash (red screen), Hindi Poppins render-timing (set during render, not useEffect). Photo button copy fixed to "TAKE PHOTO OF ITEM"; assign 400s when today's tally fully submitted.
+
+186/186 backend tests pass (33 new iter10). All frontend flows verified E2E by testing agent. NOTE: tally alert emails 422 on @steeltrack.com demo recipients (Resend blocks demo domains) — add a real admin email in production.
+
 ## Iteration 8 — Slip Validation, Fonts, Palette, Test Fixes (shipped)
 - **Weighment slip smart validation**: `/api/vision/weight` now extracts BOTH NET weight AND vehicle number (Indian plate format) from the slip. Entry create (`/entries/inward|outward`) accepts `slip_ocr_weight_kg` + `slip_ocr_vehicle_number`; backend `compute_slip_mismatch()` cross-checks against entered values (plate normalised: case/spaces ignored; weight tolerance 0.35%). Mismatch → `slip_mismatch_flag=true` + human-readable `slip_mismatch_details[]` saved on the entry. Labour sees an amber warning but save is NOT blocked; entry is flagged for office/admin review. Office/admin correction (`PATCH /entries/{id}/correction`, now with vehicle input in UI) recomputes and CLEARS the flag automatically when fixed.
 - Entry detail: red "⚠ SLIP MISMATCH — OFFICE REVIEW" banner (testID `slip-mismatch-banner`) with detail lines; green "SLIP OCR · Matches slip ✓" row when matched. Entries list shows "⚠ SLIP" badge.

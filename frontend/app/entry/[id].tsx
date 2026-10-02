@@ -8,7 +8,11 @@ import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
 import { BInput } from "@/src/ui/BInput";
 import { BButton } from "@/src/ui/BButton";
+import { Dropdown } from "@/src/ui/Dropdown";
 import { toast } from "@/src/ui/Toast";
+
+type EditLine = { id: string; thickness_mm: string; width_mm: string; length_mm: string; pieces: string; grade: string };
+const newEditLine = (): EditLine => ({ id: Math.random().toString(36).slice(2), thickness_mm: "", width_mm: "", length_mm: "", pieces: "", grade: "" });
 
 type Entry = any;
 
@@ -35,6 +39,30 @@ export default function EntryDetail() {
 
   const [invoicing, setInvoicing] = useState(false);
 
+  // Admin full-edit state
+  const [adminEditOpen, setAdminEditOpen] = useState(false);
+  const [editVehicle, setEditVehicle] = useState("");
+  const [editDriver, setEditDriver] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editBroker, setEditBroker] = useState("");
+  const [editMukadam, setEditMukadam] = useState("");
+  const [editRemarks, setEditRemarks] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editWeight, setEditWeight] = useState("");
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const [catalog, setCatalog] = useState<{ thicknesses: string[]; widths: string[]; lengths: string[]; grades: string[]; brokers: string[]; mukadams: string[] }>({ thicknesses: [], widths: [], lengths: [], grades: [], brokers: [], mukadams: [] });
+
+  useEffect(() => {
+    if (!adminEditOpen || !token) return;
+    const kinds = ["thicknesses", "widths", "lengths", "grades", "brokers", "mukadams"] as const;
+    Promise.all(kinds.map((k) => apiFetch(`/catalog/${k}`, {}, token).catch(() => [])))
+      .then((rs) => {
+        const val = (arr: any[]) => (arr || []).map((x: any) => String(x.value));
+        setCatalog({ thicknesses: val(rs[0]), widths: val(rs[1]), lengths: val(rs[2]), grades: val(rs[3]), brokers: val(rs[4]), mukadams: val(rs[5]) });
+      });
+  }, [adminEditOpen, token]);
+
   useEffect(() => {
     if (!token || !id) return;
     apiFetch(`/entries/${id}`, {}, token).then((e) => {
@@ -49,6 +77,20 @@ export default function EntryDetail() {
       setCorrVehicle(e.vehicle_number || "");
       setCorrDriver(e.driver_name || "");
       setCorrPhone(e.driver_phone || "");
+      // Admin full-edit defaults
+      setEditVehicle(e.vehicle_number || "");
+      setEditDriver(e.driver_name || "");
+      setEditPhone(e.driver_phone || "");
+      setEditBroker(e.broker_name || "");
+      setEditMukadam(e.mukadam_name || "");
+      setEditRemarks(e.remarks || "");
+      setEditDate(e.entry_date ? String(e.entry_date).slice(0, 10) : "");
+      setEditWeight(e.actual_weight_kg != null ? String(e.actual_weight_kg) : "");
+      setEditLines((e.line_items || []).map((li: any) => ({
+        id: Math.random().toString(36).slice(2),
+        thickness_mm: String(li.thickness_mm), width_mm: String(li.width_mm),
+        length_mm: String(li.length_mm), pieces: String(li.pieces), grade: li.grade || "",
+      })));
     });
   }, [id, token]);
 
@@ -121,6 +163,42 @@ export default function EntryDetail() {
       toast(e.message || "Invoice failed", "error");
     } finally {
       setInvoicing(false);
+    }
+  };
+
+  const onAdminFullEdit = async () => {
+    setEditSaving(true);
+    try {
+      const body: any = {
+        vehicle_number: editVehicle.toUpperCase() || null,
+        driver_name: editDriver || null,
+        driver_phone: editPhone || null,
+        broker_name: editBroker || null,
+        mukadam_name: editMukadam || null,
+        remarks: editRemarks || null,
+        actual_weight_kg: editWeight ? parseFloat(editWeight) : null,
+        invoice_no: invoice || null,
+        party_name: party || null,
+        rate: rate ? parseFloat(rate) : null,
+        payment_terms: terms || null,
+        office_remarks: note || null,
+      };
+      if (editDate) body.entry_date = new Date(editDate + "T00:00:00").toISOString();
+      const validLines = editLines.filter((li) => li.thickness_mm && li.width_mm && li.length_mm && li.pieces);
+      if (validLines.length > 0) {
+        body.line_items = validLines.map((li) => ({
+          thickness_mm: parseFloat(li.thickness_mm), width_mm: parseFloat(li.width_mm),
+          length_mm: parseFloat(li.length_mm), pieces: parseFloat(li.pieces), grade: li.grade || null,
+        }));
+      }
+      const upd = await apiFetch(`/entries/${id}/full-edit`, { method: "PATCH", body: JSON.stringify(body) }, token);
+      setEntry(upd);
+      setAdminEditOpen(false);
+      toast("Entry fully updated — logged in history", "success");
+    } catch (e: any) {
+      toast(e.message || "Edit failed", "error");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -265,6 +343,51 @@ export default function EntryDetail() {
           </View>
         ) : null}
 
+        {user.role === "admin" ? (
+          <View style={s.adminBlock} testID="admin-edit-block">
+            <Pressable testID="admin-edit-toggle" onPress={() => setAdminEditOpen((o) => !o)} style={s.adminHdr}>
+              <Text style={s.adminHdrTxt}>🛠 ADMIN FULL EDIT · पूर्ण संपादन {adminEditOpen ? "▲" : "▼"}</Text>
+            </Pressable>
+            {adminEditOpen ? (
+              <View style={{ padding: spacing.md, paddingTop: 0 }}>
+                <Text style={s.adminHint}>Every field of this transaction can be changed. All edits are audit-logged.</Text>
+                <BInput testID="edit-vehicle" label={t("vehicle")} value={editVehicle} onChangeText={setEditVehicle} autoCapitalize="characters" />
+                <BInput testID="edit-driver" label="DRIVER NAME" value={editDriver} onChangeText={setEditDriver} />
+                <BInput testID="edit-phone" label="DRIVER PHONE" value={editPhone} onChangeText={setEditPhone} keyboardType="phone-pad" />
+                <Dropdown testID="edit-broker" label={t("broker")} value={editBroker || null} options={catalog.brokers} onChange={setEditBroker} placeholder="SELECT BROKER" />
+                <Dropdown testID="edit-mukadam" label={t("mukadam")} value={editMukadam || null} options={catalog.mukadams} onChange={setEditMukadam} placeholder="SELECT MUKADAM" />
+                <BInput testID="edit-date" label="ENTRY DATE (YYYY-MM-DD)" value={editDate} onChangeText={setEditDate} />
+                <BInput testID="edit-weight" label={t("actual_weight")} value={editWeight} onChangeText={setEditWeight} keyboardType="decimal-pad" suffix="kg" />
+                <BInput testID="edit-remarks" label={t("remarks")} value={editRemarks} onChangeText={setEditRemarks} multiline />
+
+                <Text style={s.secTitle}>LINE ITEMS · सामान</Text>
+                {editLines.map((li, idx) => (
+                  <View key={li.id} style={s.editLineCard} testID={`edit-line-${idx}`}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={s.editLineTitle}>LINE {idx + 1}</Text>
+                      {editLines.length > 1 ? (
+                        <Pressable testID={`edit-line-remove-${idx}`} onPress={() => setEditLines((p) => p.filter((_, i) => i !== idx))}>
+                          <Text style={{ color: colors.error, fontWeight: "900", fontSize: 11 }}>REMOVE</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Dropdown testID={`edit-line-${idx}-thickness`} label={t("thickness")} value={li.thickness_mm || null} options={catalog.thicknesses} onChange={(v) => setEditLines((p) => p.map((x, i) => (i === idx ? { ...x, thickness_mm: v } : x)))} placeholder="SELECT · mm" />
+                    <Dropdown testID={`edit-line-${idx}-width`} label={t("width")} value={li.width_mm || null} options={catalog.widths} onChange={(v) => setEditLines((p) => p.map((x, i) => (i === idx ? { ...x, width_mm: v } : x)))} placeholder="SELECT · mm" />
+                    <Dropdown testID={`edit-line-${idx}-length`} label={t("length")} value={li.length_mm || null} options={catalog.lengths} onChange={(v) => setEditLines((p) => p.map((x, i) => (i === idx ? { ...x, length_mm: v } : x)))} placeholder="SELECT · mm" />
+                    <BInput testID={`edit-line-${idx}-pieces`} label={t("pieces")} value={li.pieces} onChangeText={(v) => setEditLines((p) => p.map((x, i) => (i === idx ? { ...x, pieces: v } : x)))} keyboardType="decimal-pad" />
+                    <Dropdown testID={`edit-line-${idx}-grade`} label={t("grade")} value={li.grade || null} options={catalog.grades} onChange={(v) => setEditLines((p) => p.map((x, i) => (i === idx ? { ...x, grade: v } : x)))} placeholder="SELECT GRADE" />
+                  </View>
+                ))}
+                <Pressable testID="edit-add-line" onPress={() => setEditLines((p) => [...p, newEditLine()])} style={s.editAddLine}>
+                  <Text style={s.editAddLineTxt}>+ ADD LINE</Text>
+                </Pressable>
+
+                <BButton testID="admin-edit-save" label={editSaving ? t("saving") : "SAVE FULL EDIT"} onPress={onAdminFullEdit} loading={editSaving} variant="danger" size="lg" />
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         {canEdit && entry.history && entry.history.length > 0 ? (
           <View style={s.historyBlock} testID="history-block">
             <Text style={s.secTitle}>EDIT HISTORY · पिछले बदलाव</Text>
@@ -307,6 +430,14 @@ const s = StyleSheet.create({
 
   correctionBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.error, backgroundColor: colors.surface },
   correctionHint: { fontSize: 11, color: colors.muted, marginBottom: spacing.sm, fontStyle: "italic" },
+
+  adminBlock: { marginTop: spacing.md, borderWidth: 1.5, borderColor: colors.brand, backgroundColor: colors.brandTertiary },
+  adminHdr: { padding: spacing.md },
+  adminHdrTxt: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.onSurface },
+  adminHint: { fontSize: 11, color: colors.muted, marginBottom: spacing.sm, marginHorizontal: spacing.md, fontStyle: "italic" },
+  editLineCard: { marginBottom: spacing.sm, padding: spacing.sm, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surface },
+  editLineTitle: { fontSize: 11, fontWeight: "900", letterSpacing: 2, color: colors.brand, marginBottom: 4 },
+  editAddLine: { marginBottom: spacing.md, paddingVertical: 10, borderWidth: 1.5, borderColor: colors.brand, alignItems: "center", backgroundColor: colors.surface },
 
   historyBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
   historyRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.border },

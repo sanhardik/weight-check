@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { View, ActivityIndicator, StyleSheet } from "react-native";
+import { Platform, View, ActivityIndicator, StyleSheet } from "react-native";
 import { Redirect } from "expo-router";
 import { useAuth } from "@/src/auth";
 import { colors } from "@/src/theme";
@@ -15,6 +15,10 @@ export default function Index() {
     );
   }
 
+  // Office staff work from a browser only — send them to the dedicated web portal.
+  if (user?.role === "office" && Platform.OS === "web") return <Redirect href="/office" />;
+  // Office staff on a phone still get the mobile app, but their default landing
+  // is the mobile home. Everyone else: home or login.
   if (!user) return <Redirect href="/login" />;
   return <Redirect href="/home" />;
 }

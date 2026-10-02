@@ -36,6 +36,7 @@ export default function EntriesScreen() {
   const [filter, setFilter] = useState("all");
   const [data, setData] = useState<Entry[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   const load = useCallback(async () => {
     const q = filter === "inward" || filter === "outward" ? `?direction=${filter}` : "";
@@ -54,7 +55,6 @@ export default function EntriesScreen() {
   if (!user) return <Redirect href="/login" />;
 
   const canExport = user.role === "admin" || user.role === "office";
-  const [reportOpen, setReportOpen] = useState(false);
   const exportCsv = async () => {
     try {
       const base = process.env.EXPO_PUBLIC_BACKEND_URL;

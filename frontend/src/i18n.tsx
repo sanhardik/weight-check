@@ -83,6 +83,13 @@ const D: Dict = {
   slip_warn_save: { en: "You can save, but the entry will be flagged for office review", hi: "आप सहेज सकते हैं, पर एंट्री ऑफिस जाँच के लिए फ़्लैग होगी" },
   slip_flagged_saved: { en: "Saved — flagged for office review", hi: "सहेजा गया — ऑफिस जाँच के लिए फ़्लैग" },
   slip_match_ok: { en: "Matches slip", hi: "स्लिप से मेल खाता है" },
+
+  daily_tally: { en: "DAILY TALLY", hi: "आज की गिनती" },
+  physical_pieces: { en: "Physical Pieces Counted", hi: "असली गिनती (टुकड़े)" },
+  verification_log: { en: "VERIFICATION LOG", hi: "जाँच रजिस्टर" },
+  submit_tally: { en: "SUBMIT COUNT", hi: "गिनती सहेजें" },
+  tally_note: { en: "Note (optional)", hi: "टिप्पणी (वैकल्पिक)" },
+  take_photo_item: { en: "TAKE PHOTO OF ITEM", hi: "आइटम का फोटो लें" },
 };
 
 type I18n = {

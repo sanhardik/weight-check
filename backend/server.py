@@ -198,6 +198,8 @@ class InventoryGroup(BaseModel):
     pieces_available: float
     theoretical_weight_available_kg: float
     inward_entry_ids: List[str] = []
+    last_verified_at: Optional[datetime] = None
+    last_verified_by: Optional[str] = None
 
 
 # ---------- Helpers ----------
@@ -952,6 +954,430 @@ async def correct_entry(
     return EntryOut(**e)
 
 
+# ---------- Daily Physical Verification (Tally) ----------
+DAILY_TALLY_COUNT = 2
+
+
+class VerificationGroup(BaseModel):
+    thickness_mm: float = Field(gt=0)
+    width_mm: float = Field(gt=0)
+    length_mm: float = Field(gt=0)
+    grade: Optional[str] = None
+
+
+class VerificationAssign(BaseModel):
+    groups: List[VerificationGroup]
+
+
+class VerificationSubmit(BaseModel):
+    physical_pieces: float = Field(ge=0)
+    photo_path: str  # mandatory visual proof
+    note: Optional[str] = None
+
+
+class VerificationReview(BaseModel):
+    action: Literal["approve", "reject", "apply_correction"]
+    note: Optional[str] = None
+
+
+def _inv_group_key(t, w, l, grade) -> str:
+    return f"{t}|{w}|{l}|{grade or ''}"
+
+
+async def _group_available_pieces(t: float, w: float, l: float, grade: Optional[str]) -> float:
+    pipeline = [
+        {"$unwind": "$line_items"},
+        {"$match": {
+            "line_items.thickness_mm": t, "line_items.width_mm": w,
+            "line_items.length_mm": l, "line_items.grade": grade,
+        }},
+        {"$group": {
+            "_id": None,
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
+        }},
+    ]
+    avail = 0.0
+    async for g in db.entries.aggregate(pipeline):
+        avail = float(g["in"]) - float(g["out"])
+    return avail
+
+
+async def _stock_groups_with_meta() -> List[dict]:
+    """All inventory groups with stock > 0, annotated with last verification time."""
+    pipeline = [
+        {"$unwind": "$line_items"},
+        {"$group": {
+            "_id": {"t": "$line_items.thickness_mm", "w": "$line_items.width_mm",
+                    "l": "$line_items.length_mm", "g": "$line_items.grade"},
+            "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+            "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
+        }},
+    ]
+    groups = []
+    async for g in db.entries.aggregate(pipeline):
+        avail = float(g["in"]) - float(g["out"])
+        if avail <= 0:
+            continue
+        groups.append({
+            "thickness_mm": g["_id"]["t"], "width_mm": g["_id"]["w"],
+            "length_mm": g["_id"]["l"], "grade": g["_id"].get("g"),
+            "pieces_available": avail,
+        })
+    metas = {}
+    async for m in db.inventory_meta.find({}, {"_id": 0}):
+        metas[m["group_key"]] = m
+    for g in groups:
+        meta = metas.get(_inv_group_key(g["thickness_mm"], g["width_mm"], g["length_mm"], g["grade"]))
+        g["last_verified_at"] = meta.get("last_verified_at") if meta else None
+        g["last_verified_by"] = meta.get("last_verified_by") if meta else None
+    return groups
+
+
+def _task_out(t: dict, verification: Optional[dict] = None) -> dict:
+    g = t["group"]
+    label = f"{g['thickness_mm']}×{g['width_mm']}×{g['length_mm']}" + (f" · {g['grade']}" if g.get("grade") else "")
+    return {
+        "id": t["id"], "date": t["date"], "group": g, "group_label": label,
+        "system_pieces": t.get("system_pieces"),
+        "assigned_by": t.get("assigned_by", "system"),
+        "status": t.get("status", "pending"),
+        "verification": verification,
+    }
+
+
+def _verification_out(v: dict) -> dict:
+    g = v["group"]
+    label = f"{g['thickness_mm']}×{g['width_mm']}×{g['length_mm']}" + (f" · {g['grade']}" if g.get("grade") else "")
+    return {
+        "id": v["id"], "task_id": v["task_id"], "date": v["date"],
+        "group": g, "group_label": label,
+        "system_pieces": v["system_pieces"], "physical_pieces": v["physical_pieces"],
+        "discrepancy_pieces": v["discrepancy_pieces"], "matched": v["matched"],
+        "photo_path": v.get("photo_path"), "note": v.get("note"),
+        "verified_by": v.get("verified_by"), "verified_by_name": v.get("verified_by_name"),
+        "status": v["status"], "review_note": v.get("review_note"),
+        "correction_entry_id": v.get("correction_entry_id"),
+        "correction_entry_number": v.get("correction_entry_number"),
+        "created_at": v["created_at"],
+    }
+
+
+async def _ensure_today_tasks() -> List[dict]:
+    """Idempotently create today's tally tasks (admin pre-assign overrides these)."""
+    today = now_utc().strftime("%Y-%m-%d")
+    existing = await db.verification_tasks.find({"date": today}, {"_id": 0}).to_list(10)
+    if existing:
+        return existing
+    groups = await _stock_groups_with_meta()
+    if not groups:
+        return []
+    # Prefer least-recently verified: sort by last_verified (never-verified first), pick random 2 from the stalest pool
+    groups.sort(key=lambda g: (g["last_verified_at"] is not None, g["last_verified_at"] or datetime.min.replace(tzinfo=timezone.utc)))
+    pool = groups[: max(DAILY_TALLY_COUNT * 3, len(groups) if len(groups) <= DAILY_TALLY_COUNT else 0)]
+    import random
+    picked = random.sample(pool, min(DAILY_TALLY_COUNT, len(pool)))
+    docs = []
+    for g in picked:
+        docs.append({
+            "id": str(uuid.uuid4()), "date": today,
+            "group": {"thickness_mm": g["thickness_mm"], "width_mm": g["width_mm"], "length_mm": g["length_mm"], "grade": g["grade"]},
+            "system_pieces": g["pieces_available"],
+            "assigned_by": "system", "status": "pending", "created_at": now_utc(),
+        })
+    if docs:
+        await db.verification_tasks.insert_many([d.copy() for d in docs])
+    return docs
+
+
+@api_router.get("/verifications/today")
+async def verifications_today(user: dict = Depends(current_user)):
+    """Today's tally tasks with any submissions. Auto-creates 2 system-picked tasks if none exist."""
+    tasks = await _ensure_today_tasks()
+    verifs = {}
+    async for v in db.verifications.find({"task_id": {"$in": [t["id"] for t in tasks] or ["-"]}}, {"_id": 0}):
+        verifs[v["task_id"]] = _verification_out(v)
+    out = [_task_out(t, verifs.get(t["id"])) for t in tasks]
+    return {
+        "date": now_utc().strftime("%Y-%m-%d"),
+        "tasks": out,
+        "done": sum(1 for t in out if t["status"] != "pending"),
+        "total": len(out),
+    }
+
+
+@api_router.post("/verifications/assign")
+async def verifications_assign(body: VerificationAssign, user: dict = Depends(require_role("admin"))):
+    """Admin pre-assigns today's tally items (replaces still-pending system picks)."""
+    if not body.groups or len(body.groups) > DAILY_TALLY_COUNT:
+        raise HTTPException(status_code=400, detail=f"Assign 1-{DAILY_TALLY_COUNT} groups")
+    today = now_utc().strftime("%Y-%m-%d")
+    # Remove pending (unsubmitted) tasks for today; keep submitted ones
+    await db.verification_tasks.delete_many({"date": today, "status": "pending"})
+    keep = await db.verification_tasks.count_documents({"date": today})
+    if keep >= DAILY_TALLY_COUNT:
+        raise HTTPException(status_code=400, detail="Today's tally is already fully submitted — nothing left to assign")
+    docs = []
+    for g in body.groups[: max(0, DAILY_TALLY_COUNT - keep)]:
+        avail = await _group_available_pieces(g.thickness_mm, g.width_mm, g.length_mm, g.grade)
+        docs.append({
+            "id": str(uuid.uuid4()), "date": today,
+            "group": g.dict(),
+            "system_pieces": avail,
+            "assigned_by": "admin", "assigned_by_user_id": user["id"],
+            "status": "pending", "created_at": now_utc(),
+        })
+    if docs:
+        await db.verification_tasks.insert_many([d.copy() for d in docs])
+    return await verifications_today(user)
+
+
+@api_router.post("/verifications/{task_id}/submit")
+async def verifications_submit(task_id: str, body: VerificationSubmit, user: dict = Depends(current_user)):
+    """Labour confirms the physical count with photo proof. Blind count: system pieces
+    are only revealed in this response, after submission."""
+    task = await db.verification_tasks.find_one({"id": task_id}, {"_id": 0})
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task["date"] != now_utc().strftime("%Y-%m-%d"):
+        raise HTTPException(status_code=400, detail="Task belongs to another day")
+    if task.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Already submitted")
+    if not body.photo_path:
+        raise HTTPException(status_code=400, detail="Photo proof required")
+
+    g = task["group"]
+    system_pieces = await _group_available_pieces(g["thickness_mm"], g["width_mm"], g["length_mm"], g.get("grade"))
+    discrepancy = round(body.physical_pieces - system_pieces, 3)
+    matched = abs(discrepancy) < 1e-9
+
+    vdoc = {
+        "id": str(uuid.uuid4()), "task_id": task_id, "date": task["date"],
+        "group": g,
+        "system_pieces": system_pieces, "physical_pieces": body.physical_pieces,
+        "discrepancy_pieces": discrepancy, "matched": matched,
+        "photo_path": body.photo_path, "note": body.note,
+        "verified_by": user["id"], "verified_by_name": user.get("name"),
+        "status": "submitted", "created_at": now_utc(),
+    }
+    await db.verifications.insert_one(vdoc.copy())
+    await db.verification_tasks.update_one({"id": task_id}, {"$set": {"status": "submitted", "verification_id": vdoc["id"]}})
+    await db.inventory_meta.update_one(
+        {"group_key": _inv_group_key(g["thickness_mm"], g["width_mm"], g["length_mm"], g.get("grade"))},
+        {"$set": {"group_key": _inv_group_key(g["thickness_mm"], g["width_mm"], g["length_mm"], g.get("grade")),
+                  "last_verified_at": now_utc(), "last_verified_by": user.get("name")}},
+        upsert=True,
+    )
+
+    # Soft alert to admins on discrepancy
+    if not matched:
+        try:
+            label = _verification_out(vdoc)["group_label"]
+            admins = await db.users.find({"role": "admin"}, {"_id": 0, "email": 1}).to_list(100)
+            for a in admins:
+                await _send_email(
+                    to=a["email"],
+                    subject=f"⚠ Tally mismatch — {label} ({task['date']})",
+                    html=(
+                        f"<h3>Physical tally mismatch</h3>"
+                        f"<p><b>Item:</b> {label}<br><b>System:</b> {system_pieces} pcs · "
+                        f"<b>Physical:</b> {body.physical_pieces} pcs · <b>Diff:</b> {discrepancy:+} pcs<br>"
+                        f"<b>By:</b> {user.get('name')} ({user.get('role')})</p>"
+                        f"<p>Open the app → Verification Log to approve or apply a stock correction.</p>"
+                    ),
+                )
+        except Exception as e:
+            logger.warning(f"Tally alert email failed: {e}")
+
+    return _verification_out(vdoc)
+
+
+@api_router.get("/verifications/history")
+async def verifications_history(limit: int = 50, user: dict = Depends(require_role("admin", "office"))):
+    items = []
+    async for v in db.verifications.find({}, {"_id": 0}).sort("created_at", -1).limit(min(limit, 200)):
+        items.append(_verification_out(v))
+    pending_review = await db.verifications.count_documents({"status": "submitted", "matched": False})
+    return {"items": items, "pending_review": pending_review}
+
+
+@api_router.post("/verifications/{verification_id}/review")
+async def verifications_review(verification_id: str, body: VerificationReview, user: dict = Depends(require_role("admin"))):
+    """Admin reviews a tally: approve, reject, or apply a stock correction entry."""
+    v = await db.verifications.find_one({"id": verification_id}, {"_id": 0})
+    if not v:
+        raise HTTPException(status_code=404, detail="Verification not found")
+    if v["status"] != "submitted":
+        raise HTTPException(status_code=400, detail=f"Already {v['status']}")
+
+    patch: dict = {"reviewed_by": user["id"], "reviewed_by_name": user.get("name"), "reviewed_at": now_utc(), "review_note": body.note}
+
+    if body.action in ("approve", "reject"):
+        patch["status"] = "approved" if body.action == "approve" else "rejected"
+    else:
+        discrepancy = float(v["discrepancy_pieces"])
+        if abs(discrepancy) < 1e-9:
+            patch["status"] = "approved"
+        else:
+            g = v["group"]
+            direction = "inward" if discrepancy > 0 else "outward"
+            pieces = abs(discrepancy)
+            if direction == "outward":
+                avail = await _group_available_pieces(g["thickness_mm"], g["width_mm"], g["length_mm"], g.get("grade"))
+                if pieces > avail + 1e-9:
+                    raise HTTPException(status_code=400, detail=f"Cannot correct: only {avail} pcs in stock")
+            tw = calc_theoretical_weight(g["thickness_mm"], g["width_mm"], g["length_mm"], pieces)
+            entry_number = await next_entry_number(direction)
+            edoc = {
+                "id": str(uuid.uuid4()), "entry_number": entry_number, "direction": direction,
+                "thickness_mm": g["thickness_mm"], "width_mm": g["width_mm"], "length_mm": g["length_mm"],
+                "pieces": pieces, "grade": g.get("grade"),
+                "line_items": [{**g, "pieces": pieces, "theoretical_weight_kg": tw}],
+                "vehicle_number": "PHYSICAL-TALLY",
+                "driver_name": None, "driver_phone": None, "mukadam_name": None,
+                "broker_name": "Stock Correction" if direction == "outward" else None,
+                "theoretical_weight_kg": tw,
+                "actual_weight_kg": None, "variance_pct": None, "variance_flagged": None,
+                "slip_photo_path": None, "slip_ocr_weight_kg": None, "slip_ocr_vehicle_number": None,
+                "slip_mismatch_flag": False, "slip_mismatch_details": [],
+                "remarks": f"Physical tally correction — verification {verification_id[:8]} (system {v['system_pieces']} → physical {v['physical_pieces']} pcs)",
+                "entry_date": now_utc(),
+                "created_by": user["id"], "created_at": now_utc(),
+            }
+            await db.entries.insert_one(edoc.copy())
+            patch["status"] = "correction_applied"
+            patch["correction_entry_id"] = edoc["id"]
+            patch["correction_entry_number"] = entry_number
+
+    await db.verifications.update_one({"id": verification_id}, {"$set": patch})
+    v = await db.verifications.find_one({"id": verification_id}, {"_id": 0})
+    return _verification_out(v)
+
+
+# ---------- Admin full edit (any transaction, any field) ----------
+class EntryFullEdit(BaseModel):
+    vehicle_number: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    mukadam_name: Optional[str] = None
+    broker_name: Optional[str] = None
+    invoice_no: Optional[str] = None
+    party_name: Optional[str] = None
+    rate: Optional[float] = None
+    payment_terms: Optional[str] = None
+    office_remarks: Optional[str] = None
+    remarks: Optional[str] = None
+    entry_date: Optional[datetime] = None
+    actual_weight_kg: Optional[float] = None
+    line_items: Optional[List[LineItem]] = None
+
+
+_FULL_EDIT_FIELDS = (
+    "vehicle_number", "driver_name", "driver_phone", "mukadam_name", "broker_name",
+    "invoice_no", "party_name", "rate", "payment_terms", "office_remarks", "remarks",
+    "entry_date", "actual_weight_kg",
+)
+
+
+@api_router.patch("/entries/{entry_id}/full-edit", response_model=EntryOut)
+async def full_edit_entry(entry_id: str, body: EntryFullEdit, user: dict = Depends(require_role("admin"))):
+    """Admin can edit ANY field of ANY transaction at any time. Every change is audit-logged."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    provided = body.dict(exclude_unset=True)
+    if not provided:
+        raise HTTPException(status_code=400, detail="No changes supplied")
+
+    patch: dict = {}
+    changes = []
+    for field in _FULL_EDIT_FIELDS:
+        if field in provided and provided[field] != e.get(field):
+            patch[field] = provided[field]
+            changes.append({
+                "field": field, "old": e.get(field), "new": provided[field],
+                "by": user["id"], "by_name": user.get("name"), "by_role": user.get("role"), "at": now_utc(),
+            })
+
+    if body.line_items is not None:
+        items = []
+        for li in body.line_items:
+            w = calc_theoretical_weight(li.thickness_mm, li.width_mm, li.length_mm, li.pieces)
+            items.append({
+                "thickness_mm": li.thickness_mm, "width_mm": li.width_mm, "length_mm": li.length_mm,
+                "pieces": li.pieces, "grade": li.grade, "theoretical_weight_kg": w,
+            })
+        if not items:
+            raise HTTPException(status_code=400, detail="At least one line item required")
+        # Stock guardrail for outward: new pieces must fit availability excluding this entry
+        if e.get("direction") == "outward":
+            for li in items:
+                pipeline = [
+                    {"$unwind": "$line_items"},
+                    {"$match": {
+                        "id": {"$ne": entry_id},
+                        "line_items.thickness_mm": li["thickness_mm"], "line_items.width_mm": li["width_mm"],
+                        "line_items.length_mm": li["length_mm"], "line_items.grade": li["grade"],
+                    }},
+                    {"$group": {
+                        "_id": None,
+                        "in": {"$sum": {"$cond": [{"$eq": ["$direction", "inward"]}, "$line_items.pieces", 0]}},
+                        "out": {"$sum": {"$cond": [{"$eq": ["$direction", "outward"]}, "$line_items.pieces", 0]}},
+                    }},
+                ]
+                avail = 0.0
+                async for gres in db.entries.aggregate(pipeline):
+                    avail = float(gres["in"]) - float(gres["out"])
+                if li["pieces"] > avail + 1e-9:
+                    raise HTTPException(status_code=400, detail=f"INSUFFICIENT STOCK: only {avail} pcs for {li['thickness_mm']}×{li['width_mm']}×{li['length_mm']}")
+        total_tw = round(sum(i["theoretical_weight_kg"] for i in items), 3)
+        primary = items[0]
+        patch["line_items"] = items
+        patch["pieces"] = sum(i["pieces"] for i in items)
+        patch["thickness_mm"] = primary["thickness_mm"]
+        patch["width_mm"] = primary["width_mm"]
+        patch["length_mm"] = primary["length_mm"]
+        patch["grade"] = primary["grade"]
+        patch["theoretical_weight_kg"] = total_tw
+        changes.append({
+            "field": "line_items", "old": f"{len(e.get('line_items') or [])} line(s)",
+            "new": f"{len(items)} line(s), {patch['pieces']} pcs",
+            "by": user["id"], "by_name": user.get("name"), "by_role": user.get("role"), "at": now_utc(),
+        })
+
+    # Recompute variance + slip mismatch if weight/lines changed
+    new_tw = patch.get("theoretical_weight_kg", e.get("theoretical_weight_kg"))
+    new_actual = patch.get("actual_weight_kg", e.get("actual_weight_kg"))
+    if "theoretical_weight_kg" in patch or "actual_weight_kg" in patch:
+        vpct, flagged = calc_variance(new_tw, new_actual)
+        patch["variance_pct"] = vpct
+        patch["variance_flagged"] = flagged
+    if "actual_weight_kg" in patch or "vehicle_number" in patch:
+        sflag, sdet = compute_slip_mismatch(
+            new_actual,
+            patch.get("vehicle_number", e.get("vehicle_number")),
+            e.get("slip_ocr_weight_kg"),
+            e.get("slip_ocr_vehicle_number"),
+        )
+        patch["slip_mismatch_flag"] = sflag
+        patch["slip_mismatch_details"] = sdet
+
+    if not patch:
+        raise HTTPException(status_code=400, detail="No effective changes")
+
+    await db.entries.update_one({"id": entry_id}, {"$set": patch})
+    if changes:
+        await _push_history(entry_id, changes)
+    if "vehicle_number" in patch or "driver_name" in patch or "driver_phone" in patch:
+        updated = await db.entries.find_one({"id": entry_id}, {"_id": 0, "vehicle_number": 1, "driver_name": 1, "driver_phone": 1})
+        if updated:
+            await _remember_vehicle(updated["vehicle_number"], updated.get("driver_name"), updated.get("driver_phone"))
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    e = await _enrich_entry(e, user)
+    return EntryOut(**e)
+
+
 # ---------- Vehicle memory ----------
 @api_router.get("/vehicles/{plate}")
 async def get_vehicle(plate: str, user: dict = Depends(current_user)):
@@ -1003,6 +1429,15 @@ async def inventory(user: dict = Depends(current_user)):
             theoretical_weight_available_kg=tw,
             inward_entry_ids=g.get("inward_ids", []),
         ))
+    # Merge last physical-verification stamps
+    metas = {}
+    async for m in db.inventory_meta.find({}, {"_id": 0}):
+        metas[m["group_key"]] = m
+    for r in results:
+        meta = metas.get(_inv_group_key(r.thickness_mm, r.width_mm, r.length_mm, r.grade))
+        if meta:
+            r.last_verified_at = meta.get("last_verified_at")
+            r.last_verified_by = meta.get("last_verified_by")
     # Sort by thickness, width, length
     results.sort(key=lambda x: (x.thickness_mm, x.width_mm, x.length_mm))
     return results
@@ -1870,6 +2305,62 @@ async def upsert_party(name: str, body: PartyUpsert, user: dict = Depends(requir
     }
     await db.parties.update_one({"name": doc["name"]}, {"$set": doc}, upsert=True)
     return doc
+
+
+@api_router.get("/parties/ledger")
+async def parties_ledger(user: dict = Depends(require_role("admin", "office"))):
+    """Per-party rollup used by the office web portal:
+    total outward entries, pieces, weight, invoiced count, pending-office count, last activity."""
+    pipeline = [
+        {"$match": {"direction": "outward", "party_name": {"$nin": [None, ""]}}},
+        {"$group": {
+            "_id": "$party_name",
+            "entries": {"$sum": 1},
+            "pieces": {"$sum": "$pieces"},
+            "weight": {"$sum": "$theoretical_weight_kg"},
+            "invoiced": {"$sum": {"$cond": [{"$and": [{"$ne": ["$invoice_no", None]}, {"$ne": ["$invoice_no", ""]}]}, 1, 0]}},
+            "pending_office": {"$sum": {"$cond": [{"$or": [{"$eq": ["$invoice_no", None]}, {"$eq": ["$invoice_no", ""]}]}, 1, 0]}},
+            "last_at": {"$max": "$created_at"},
+        }},
+        {"$sort": {"last_at": -1}},
+    ]
+    agg = {}
+    async for g in db.entries.aggregate(pipeline):
+        agg[g["_id"]] = g
+
+    stored = {}
+    async for p in db.parties.find({}, {"_id": 0}):
+        stored[p["name"]] = p
+
+    out = []
+    names = set(agg.keys()) | set(stored.keys())
+    for name in names:
+        g = agg.get(name, {})
+        p = stored.get(name, {})
+        out.append({
+            "name": name,
+            "whatsapp": p.get("whatsapp"),
+            "whatsapp_digits": _norm_phone(p.get("whatsapp")),
+            "email": p.get("email"),
+            "entries": int(g.get("entries", 0)),
+            "pieces": float(g.get("pieces", 0) or 0),
+            "weight": round(float(g.get("weight", 0) or 0), 2),
+            "invoiced": int(g.get("invoiced", 0)),
+            "pending_office": int(g.get("pending_office", 0)),
+            "last_at": g.get("last_at"),
+        })
+    def _ts(d):
+        v = d["last_at"]
+        if v is None:
+            return 0.0
+        try:
+            if v.tzinfo is None:
+                v = v.replace(tzinfo=timezone.utc)
+            return v.timestamp()
+        except Exception:
+            return 0.0
+    out.sort(key=lambda x: (x["pending_office"] > 0, _ts(x)), reverse=True)
+    return out
 
 
 # ---------- Catalog (grades + dimensions + mukadams + brokers) ----------
