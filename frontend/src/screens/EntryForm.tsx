@@ -5,7 +5,7 @@ import {
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
-import { useAuth, apiFetch } from "@/src/auth";
+import { useAuth, apiFetch, uploadImageAsset } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
@@ -162,23 +162,13 @@ export function EntryForm({ direction }: Props) {
       const asset = res.assets[0];
       setPhotoUri(asset.uri);
       setUploading(true);
-      const form = new FormData();
-      const name = `slip-${Date.now()}.jpg`;
-      if (Platform.OS === "web") {
-        const blob = await (await fetch(asset.uri)).blob();
-        form.append("file", blob, name);
-      } else {
-        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
-      }
-      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const up = await uploadImageAsset(asset, token);
       setPhotoPath(up.path);
       toast("Photo uploaded", "success");
       setOcrLoading(true);
       try {
-        // Backend expects multipart form (Form field), not JSON
-        const ocrForm = new FormData();
-        ocrForm.append("slip_photo_path", up.path);
-        const ocr = await apiFetch("/vision/weight", { method: "POST", body: ocrForm }, token);
+        // JSON path-based variant — FormData is broken under expo/fetch on native
+        const ocr = await apiFetch("/vision/weight/path", { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) }, token);
         if (ocr?.weight_kg != null) {
           setActualWeight(String(ocr.weight_kg));
           setOcrWeight(Number(ocr.weight_kg));

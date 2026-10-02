@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Image, Platform, Linking } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
-import { useAuth, apiFetch, fileUrl } from "@/src/auth";
+import { useAuth, apiFetch, fileUrl, uploadImageAsset } from "@/src/auth";
 import { colors, spacing } from "@/src/theme";
 import { toast } from "@/src/ui/Toast";
 
@@ -31,15 +31,7 @@ export default function OfficeEntryDetail() {
       if (res.canceled || !res.assets?.[0]) return;
       setSlipBusy(true);
       const asset = res.assets[0];
-      const form = new FormData();
-      const name = `slip-${Date.now()}.jpg`;
-      if (Platform.OS === "web") {
-        const blob = await (await fetch(asset.uri)).blob();
-        form.append("file", blob, name);
-      } else {
-        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
-      }
-      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const up = await uploadImageAsset(asset, token);
       const upd = await apiFetch(`/entries/${id}/slip`, { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) }, token);
       setE(upd);
       const bits = [upd.slip_ocr_weight_kg != null ? `${upd.slip_ocr_weight_kg} kg` : null, upd.slip_ocr_vehicle_number ? `🚚 ${upd.slip_ocr_vehicle_number}` : null].filter(Boolean).join(" · ");

@@ -466,16 +466,16 @@ async def list_users(admin: dict = Depends(require_role("admin"))):
 
 
 # ---------- Upload ----------
-@api_router.post("/upload")
-async def upload_file(file: UploadFile = File(...), user: dict = Depends(current_user)):
-    data = await file.read()
+async def _store_upload(user: dict, filename: str, data: bytes, content_type: str) -> dict:
+    """Shared upload logic: push to object storage + record ownership."""
     if len(data) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
-    ext = (file.filename or "jpg").split(".")[-1].lower()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 20 MB)")
+    ext = (filename or "jpg").split(".")[-1].lower()
     if ext not in {"jpg", "jpeg", "png", "webp", "heic"}:
         ext = "jpg"
     path = f"{APP_NAME}/uploads/{user['id']}/{uuid.uuid4().hex}.{ext}"
-    content_type = file.content_type or "image/jpeg"
     try:
         result = await run_in_threadpool(_sync_put_object, path, data, content_type)
     except requests.HTTPError as e:
@@ -489,6 +489,28 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(current
         "created_at": now_utc(),
     })
     return {"path": result["path"], "size": result.get("size")}
+
+
+class UploadBase64(BaseModel):
+    filename: str
+    content_base64: str
+
+
+@api_router.post("/upload/base64")
+async def upload_base64(body: UploadBase64, user: dict = Depends(current_user)):
+    """JSON upload fallback for native clients where fetch+FormData is unreliable
+    (expo/fetch winter runtime throws 'Unsupported FormData implementation')."""
+    try:
+        data = base64.b64decode(body.content_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 content")
+    return await _store_upload(user, body.filename, data, "image/jpeg")
+
+
+@api_router.post("/upload")
+async def upload_file(file: UploadFile = File(...), user: dict = Depends(current_user)):
+    data = await file.read()
+    return await _store_upload(user, file.filename or "photo.jpg", data, file.content_type or "image/jpeg")
 
 
 @api_router.get("/files/{path:path}")
@@ -1810,17 +1832,35 @@ def _extract_numbers(text: str) -> list:
 
 @api_router.post("/voice/transcribe")
 async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(current_user)):
+    return await _transcribe_audio(await file.read(), file.filename or "audio.m4a")
+
+
+class VoiceBase64(BaseModel):
+    filename: str
+    content_base64: str
+
+
+@api_router.post("/voice/transcribe/base64")
+async def voice_transcribe_base64(body: VoiceBase64, user: dict = Depends(current_user)):
+    """JSON upload fallback for native clients (expo/fetch FormData bug)."""
+    try:
+        data = base64.b64decode(body.content_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 content")
+    return await _transcribe_audio(data, body.filename)
+
+
+async def _transcribe_audio(data: bytes, filename: str):
     """Accept short audio, transcribe via Emergent-managed OpenAI STT, and extract
     up to 3 numbers in reading order for Thickness / Width / Length. Tries
     gpt-4o-mini-transcribe first; falls back to whisper-1 on any failure (older
     model is more tolerant of unusual audio containers from Expo recorder)."""
-    data = await file.read()
     if len(data) < 1024:
         raise HTTPException(status_code=400, detail="Audio too short")
     if len(data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Audio too large (max 25MB)")
 
-    name = file.filename or "audio.m4a"
+    name = filename or "audio.m4a"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else "m4a"
     if ext not in {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "flac"}:
         ext = "m4a"
@@ -1919,6 +1959,38 @@ async def _ocr_slip_bytes(data: bytes, mime: str, session_prefix: str) -> dict:
     if not out["raw"]:
         out["raw"] = text_out[:160]
     return out
+
+
+class VisionPathReq(BaseModel):
+    slip_photo_path: str
+
+
+@api_router.post("/vision/weight/path")
+async def vision_weight_by_path(body: VisionPathReq, user: dict = Depends(current_user)):
+    """JSON variant of /vision/weight — native clients (expo/fetch) can't send
+    FormData, so they reference the already-uploaded slip by path instead."""
+    upload = await db.uploads.find_one({"path": body.slip_photo_path}, {"_id": 0})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Slip photo not found")
+    if user["role"] == "labour" and upload.get("owner_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        data, mime = await run_in_threadpool(_sync_get_object, body.slip_photo_path)
+    except requests.HTTPError:
+        raise HTTPException(status_code=404, detail="Slip photo not accessible")
+    if not data or len(data) < 500:
+        raise HTTPException(status_code=400, detail="Image too small")
+    try:
+        ocr = await _ocr_slip_bytes(data, mime, f"vision-{user['id']}")
+    except Exception as e:
+        logger.error(f"Vision OCR failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Vision read failed: {e}")
+    return {
+        "weight_kg": ocr.get("weight_kg"),
+        "vehicle_number": ocr.get("vehicle_number"),
+        "confidence": ocr.get("confidence", 0.0),
+        "raw": ocr.get("raw", ""),
+    }
 
 
 @api_router.post("/vision/weight")

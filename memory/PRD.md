@@ -56,6 +56,11 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 13 — Native Upload Bug Fix (shipped)
+- **Bug**: On real phones (Expo Go / builds), photo upload crashed with "Unsupported FormData implementation" — Expo's winter `expo/fetch` runtime cannot convert React Native FormData.
+- **Fix**: native uploads now bypass FormData entirely — base64 JSON instead. New endpoints: `POST /api/upload/base64`, `POST /api/vision/weight/path` (JSON), `POST /api/voice/transcribe/base64`. Shared `_store_upload` / `_transcribe_audio` helpers keep both paths identical. Frontend `uploadImageAsset(asset, token)` helper in `src/auth.tsx` picks multipart on web, base64 on native; swapped in EntryForm, verify, entry detail, office portal; VoiceInput native branch converted too; EntryForm OCR uses the JSON path route.
+- **Verified**: 13/13 new backend tests, 213/214 regression (1 known OCR non-determinism flake), all web upload flows green. Native runtime needs one real-device smoke test by the user.
+
 ## Iteration 12 — Late Weighment Slip Attach (shipped)
 - **`POST /api/entries/{id}/slip`**: attach (or office/admin replace) the weighment slip photo AFTER the entry was saved. Labour may only ADD when no slip exists (400 otherwise — prevents tampering); office/admin may replace anytime (audit-logged as `slip_photo_path` WAS→NOW). Slip is re-OCRed on attach (weight + vehicle) and `slip_mismatch_flag` recomputed — a late slip with wrong data still flags the entry for office review.
 - Vision endpoint refactored to share `_ocr_slip_bytes` helper (iter9 slip tests stay green).

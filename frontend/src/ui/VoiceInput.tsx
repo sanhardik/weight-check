@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, ActivityIndicator } from "react-native";
 import { AudioModule, RecordingPresets, useAudioRecorder } from "expo-audio";
+import * as FileSystem from "expo-file-system/legacy";
 import { colors, spacing } from "@/src/theme";
 import { useAuth, apiFetch } from "@/src/auth";
 import { toast } from "@/src/ui/Toast";
@@ -36,14 +37,20 @@ export function VoiceInput({ onNumbers, testID = "voice-input" }: Props) {
   }, [recorder, isWeb]);
 
   const upload = useCallback(async (uri: string, mime: string, filename: string) => {
-    const form = new FormData();
     if (isWeb) {
+      const form = new FormData();
       const blob = await (await fetch(uri)).blob();
       form.append("file", blob, filename);
-    } else {
-      form.append("file", { uri, name: filename, type: mime } as any);
+      const res = await apiFetch("/voice/transcribe", { method: "POST", body: form }, token);
+      return res as { text: string; numbers: number[] };
     }
-    const res = await apiFetch("/voice/transcribe", { method: "POST", body: form }, token);
+    // Native: expo/fetch (winter runtime) throws "Unsupported FormData implementation"
+    // on multipart — send base64 JSON instead.
+    const content_base64 = await FileSystem.readAsStringAsync(uri, { encoding: "base64" });
+    const res = await apiFetch("/voice/transcribe/base64", {
+      method: "POST",
+      body: JSON.stringify({ filename, content_base64 }),
+    }, token);
     return res as { text: string; numbers: number[] };
   }, [isWeb, token]);
 

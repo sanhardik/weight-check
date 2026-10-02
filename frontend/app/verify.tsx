@@ -5,7 +5,7 @@ import {
 import { Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
-import { useAuth, apiFetch, fileUrl } from "@/src/auth";
+import { useAuth, apiFetch, fileUrl, uploadImageAsset } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
@@ -68,15 +68,7 @@ export default function Verify() {
       const asset = res.assets[0];
       setPhotoUri((p) => ({ ...p, [taskId]: asset.uri }));
       setBusy((b) => ({ ...b, [taskId]: true }));
-      const form = new FormData();
-      const name = `tally-${Date.now()}.jpg`;
-      if (Platform.OS === "web") {
-        const blob = await (await fetch(asset.uri)).blob();
-        form.append("file", blob, name);
-      } else {
-        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
-      }
-      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const up = await uploadImageAsset(asset, token);
       setPhotoPath((p) => ({ ...p, [taskId]: up.path }));
       toast("Photo uploaded", "success");
     } catch (e: any) {

@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
+import * as FileSystem from "expo-file-system/legacy";
 
 export type Role = "admin" | "office" | "labour";
 
@@ -102,4 +104,28 @@ export function fileUrl(path: string, token: string | null) {
   if (!path) return "";
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   return `${BASE}/api/files/${encoded}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+}
+
+/**
+ * Upload a photo picked via expo-image-picker.
+ * On native (Expo Go / builds) the winter expo/fetch runtime throws
+ * "Unsupported FormData implementation" for multipart uploads, so we send the
+ * file as base64 JSON instead. Web keeps the regular multipart upload.
+ */
+export async function uploadImageAsset(
+  asset: { uri: string; mimeType?: string | null; fileName?: string | null },
+  token: string | null
+): Promise<{ path: string; size?: number }> {
+  const name = asset.fileName || `photo-${Date.now()}.jpg`;
+  if (Platform.OS === "web") {
+    const blob = await (await fetch(asset.uri)).blob();
+    const form = new FormData();
+    form.append("file", blob, name);
+    return apiFetch("/upload", { method: "POST", body: form }, token);
+  }
+  const content_base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: "base64" });
+  return apiFetch("/upload/base64", {
+    method: "POST",
+    body: JSON.stringify({ filename: name, content_base64 }),
+  }, token);
 }

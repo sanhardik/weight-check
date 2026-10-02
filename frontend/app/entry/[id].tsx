@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platfo
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, Redirect } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
-import { useAuth, apiFetch, fileUrl } from "@/src/auth";
+import { useAuth, apiFetch, fileUrl, uploadImageAsset } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
 import { Header } from "@/src/ui/Header";
@@ -60,15 +60,7 @@ export default function EntryDetail() {
       const asset = res.assets[0];
       setSlipUri(asset.uri);
       setSlipBusy(true);
-      const form = new FormData();
-      const name = `slip-${Date.now()}.jpg`;
-      if (Platform.OS === "web") {
-        const blob = await (await fetch(asset.uri)).blob();
-        form.append("file", blob, name);
-      } else {
-        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
-      }
-      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const up = await uploadImageAsset(asset, token);
       const upd = await apiFetch(`/entries/${id}/slip`, { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) }, token);
       setEntry(upd);
       setSlipUri(null);
