@@ -17,28 +17,28 @@ export default function OfficeEntries() {
   const [onlyFlagged, setOnlyFlagged] = useState(false);
 
   const load = useCallback(async () => {
-    const q = direction === "all" ? "" : `?direction=${direction}`;
+    const params: string[] = [];
+    if (direction !== "all") params.push(`direction=${direction}`);
+    if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
+    const q = params.length ? `?${params.join("&")}` : "";
     const r = await apiFetch(`/entries${q}`, {}, token);
     setAll(r);
-  }, [token, direction]);
-  useEffect(() => { load(); }, [load]);
+  }, [token, direction, search]);
+
+  // Debounced server-side search — queries the whole DB, not just the loaded page
+  useEffect(() => {
+    const t = setTimeout(() => { load().catch(() => setAll([])); }, 350);
+    return () => clearTimeout(t);
+  }, [load]);
 
   const data = useMemo(() => {
     if (!all) return null;
-    const q = search.trim().toLowerCase();
     return all.filter((e: Entry) => {
       if (onlyPending && e.invoice_no) return false;
       if (onlyFlagged && !(e.variance_flagged || e.slip_mismatch_flag)) return false;
-      if (!q) return true;
-      return (
-        (e.entry_number || "").toLowerCase().includes(q) ||
-        (e.vehicle_number || "").toLowerCase().includes(q) ||
-        (e.invoice_no || "").toLowerCase().includes(q) ||
-        (e.party_name || "").toLowerCase().includes(q) ||
-        (e.broker_name || "").toLowerCase().includes(q)
-      );
+      return true;
     });
-  }, [all, search, onlyPending, onlyFlagged]);
+  }, [all, onlyPending, onlyFlagged]);
 
   const canExport = user?.role === "admin" || user?.role === "office";
   const exportCsv = async () => {

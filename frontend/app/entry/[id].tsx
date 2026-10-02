@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Pressable, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, Redirect } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { useAuth, apiFetch, fileUrl } from "@/src/auth";
 import { useI18n } from "@/src/i18n";
 import { colors, spacing } from "@/src/theme";
@@ -38,6 +39,52 @@ export default function EntryDetail() {
   const [correcting, setCorrecting] = useState(false);
 
   const [invoicing, setInvoicing] = useState(false);
+
+  // Late slip attach (labour can add; office/admin can also replace)
+  const [slipUri, setSlipUri] = useState<string | null>(null);
+  const [slipBusy, setSlipBusy] = useState(false);
+
+  const pickSlip = async (fromCamera: boolean) => {
+    try {
+      let res;
+      if (fromCamera) {
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) { toast("Camera permission denied", "error"); return; }
+        res = await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 0.7 });
+      } else {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) { toast("Gallery permission denied", "error"); return; }
+        res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.7 });
+      }
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      setSlipUri(asset.uri);
+      setSlipBusy(true);
+      const form = new FormData();
+      const name = `slip-${Date.now()}.jpg`;
+      if (Platform.OS === "web") {
+        const blob = await (await fetch(asset.uri)).blob();
+        form.append("file", blob, name);
+      } else {
+        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
+      }
+      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const upd = await apiFetch(`/entries/${id}/slip`, { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) }, token);
+      setEntry(upd);
+      setSlipUri(null);
+      const ocrBits = [
+        upd.slip_ocr_weight_kg != null ? `${upd.slip_ocr_weight_kg} kg` : null,
+        upd.slip_ocr_vehicle_number ? `🚚 ${upd.slip_ocr_vehicle_number}` : null,
+      ].filter(Boolean).join(" · ");
+      toast(ocrBits ? `Slip attached — OCR: ${ocrBits}` : "Slip attached", "success");
+      if (upd.slip_mismatch_flag) toast("⚠ Slip differs from entry — flagged for office review", "warning");
+    } catch (e: any) {
+      toast(e.message || "Slip attach failed", "error");
+      setSlipUri(null);
+    } finally {
+      setSlipBusy(false);
+    }
+  };
 
   // Admin full-edit state
   const [adminEditOpen, setAdminEditOpen] = useState(false);
@@ -259,20 +306,46 @@ export default function EntryDetail() {
           </>
         ) : null}
 
-        {entry.slip_photo_path ? (
-          <View style={{ marginTop: spacing.md }}>
-            <Text style={s.secTitle}>SLIP PHOTO</Text>
-            {Platform.OS === "web" ? (
-              <Image source={{ uri: fileUrl(entry.slip_photo_path, token) }} style={s.slip} resizeMode="contain" />
-            ) : (
-              <Image
-                source={{ uri: fileUrl(entry.slip_photo_path, null), headers: { Authorization: `Bearer ${token}` } }}
-                style={s.slip}
-                resizeMode="contain"
-              />
-            )}
-          </View>
-        ) : null}
+        <View style={{ marginTop: spacing.md }}>
+          <Text style={s.secTitle}>SLIP PHOTO · स्लिप फोटो</Text>
+          {entry.slip_photo_path ? (
+            <View>
+              {Platform.OS === "web" ? (
+                <Image source={{ uri: fileUrl(entry.slip_photo_path, token) }} style={s.slip} resizeMode="contain" />
+              ) : (
+                <Image
+                  source={{ uri: fileUrl(entry.slip_photo_path, null), headers: { Authorization: `Bearer ${token}` } }}
+                  style={s.slip}
+                  resizeMode="contain"
+                />
+              )}
+              {(user.role === "office" || user.role === "admin") ? (
+                <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+                  <BButton testID="slip-replace-camera" label="REPLACE · CAMERA" onPress={() => pickSlip(true)} variant="ghost" size="sm" />
+                  <BButton testID="slip-replace-gallery" label="REPLACE · GALLERY" onPress={() => pickSlip(false)} variant="ghost" size="sm" />
+                </View>
+              ) : null}
+            </View>
+          ) : (
+            <View>
+              {slipUri ? (
+                <View style={{ position: "relative" }}>
+                  <Image source={{ uri: slipUri }} style={s.slip} resizeMode="contain" />
+                  {slipBusy ? <View style={s.slipOverlay}><ActivityIndicator color={colors.onSurfaceInverse} /><Text style={{ color: colors.onSurfaceInverse, fontWeight: "800", marginTop: 6 }}>ATTACHING + READING...</Text></View> : null}
+                </View>
+              ) : (
+                <View style={s.addSlipBox} testID="add-slip-block">
+                  <Text style={s.addSlipTxt}>No slip photo yet — add it now · अभी स्लिप फोटो जोड़ें</Text>
+                  <View style={{ flexDirection: "row", gap: spacing.sm }}>
+                    <BButton testID="slip-add-camera" label={t("take_photo")} onPress={() => pickSlip(true)} variant="secondary" size="md" />
+                    <BButton testID="slip-add-gallery" label={t("pick_photo")} onPress={() => pickSlip(false)} variant="ghost" size="md" />
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+          {slipBusy && !slipUri ? <ActivityIndicator color={colors.brand} style={{ marginTop: 8 }} /> : null}
+        </View>
 
         {entry.slip_mismatch_flag ? (
           <View style={s.mismatchBlock} testID="slip-mismatch-banner">
@@ -421,6 +494,9 @@ const s = StyleSheet.create({
   k: { fontSize: 11, fontWeight: "900", color: colors.muted, letterSpacing: 1 },
   v: { fontSize: 16, fontWeight: "900", color: colors.onSurface, flexShrink: 1, textAlign: "right", marginLeft: spacing.sm },
   slip: { width: "100%", aspectRatio: 1.3, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary },
+  slipOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center" },
+  addSlipBox: { padding: spacing.md, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.brand, backgroundColor: colors.brandTertiary, gap: spacing.sm, alignItems: "flex-start" },
+  addSlipTxt: { fontSize: 12, fontWeight: "800", color: colors.onSurface },
   mismatchBlock: { marginTop: spacing.md, padding: spacing.md, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.error },
   mismatchTitle: { fontSize: 13, fontWeight: "900", letterSpacing: 1, color: colors.onError },
   mismatchTxt: { fontSize: 12, fontWeight: "700", color: colors.onError, marginTop: 4 },

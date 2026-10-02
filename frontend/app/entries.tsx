@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl, Platform, Linking } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, ScrollView, ActivityIndicator, RefreshControl, Platform, Linking, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Redirect, router } from "expo-router";
 import { useAuth, apiFetch } from "@/src/auth";
@@ -37,15 +37,23 @@ export default function EntriesScreen() {
   const [data, setData] = useState<Entry[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
-    const q = filter === "inward" || filter === "outward" ? `?direction=${filter}` : "";
+    const params: string[] = [];
+    if (filter === "inward" || filter === "outward") params.push(`direction=${filter}`);
+    if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
+    const q = params.length ? `?${params.join("&")}` : "";
     const d: Entry[] = await apiFetch(`/entries${q}`, {}, token);
     const filtered = filter === "pending" ? d.filter((e) => !e.invoice_no) : d;
     setData(filtered);
-  }, [filter, token]);
+  }, [filter, search, token]);
 
-  useEffect(() => { if (token) load().catch(() => setData([])); }, [token, load]);
+  // Debounce search → server-side query (the full DB is searched, not just the loaded page)
+  useEffect(() => {
+    const t = setTimeout(() => { if (token) load().catch(() => setData([])); }, 350);
+    return () => clearTimeout(t);
+  }, [token, load]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -97,6 +105,15 @@ export default function EntriesScreen() {
         ) : undefined}
       />
       <View style={s.chipHeader}>
+        <TextInput
+          testID="entries-search"
+          value={search}
+          onChangeText={setSearch}
+          placeholder={t("search_entries")}
+          placeholderTextColor={colors.muted}
+          autoCapitalize="characters"
+          style={s.search}
+        />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
           {FILTERS.map((f) => (
             <Pressable
@@ -159,7 +176,8 @@ export default function EntriesScreen() {
 }
 
 const s = StyleSheet.create({
-  chipHeader: { height: 56, borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, justifyContent: "center", backgroundColor: colors.surfaceSecondary },
+  chipHeader: { borderBottomWidth: 1.5, borderBottomColor: colors.borderStrong, backgroundColor: colors.surfaceSecondary, paddingVertical: spacing.xs },
+  search: { marginHorizontal: spacing.md, marginVertical: spacing.xs, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surface, paddingHorizontal: spacing.md, paddingVertical: 10, fontSize: 15, color: colors.onSurface, fontWeight: "700" },
   chipRow: { paddingHorizontal: spacing.md, gap: spacing.sm, alignItems: "center" },
   chip: { height: 36, paddingHorizontal: 14, borderWidth: 1.5, borderColor: colors.borderStrong, backgroundColor: colors.surface, justifyContent: "center", flexShrink: 0 },
   chipActive: { backgroundColor: colors.brand, borderColor: colors.brand },

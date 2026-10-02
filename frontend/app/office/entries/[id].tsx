@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Image, Platform, Linking } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { useAuth, apiFetch, fileUrl } from "@/src/auth";
 import { colors, spacing } from "@/src/theme";
 import { toast } from "@/src/ui/Toast";
@@ -22,6 +23,31 @@ export default function OfficeEntryDetail() {
   const [corrDriver, setCorrDriver] = useState("");
   const [correcting, setCorrecting] = useState(false);
   const [invoicing, setInvoicing] = useState(false);
+  const [slipBusy, setSlipBusy] = useState(false);
+
+  const attachSlip = async () => {
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.7 });
+      if (res.canceled || !res.assets?.[0]) return;
+      setSlipBusy(true);
+      const asset = res.assets[0];
+      const form = new FormData();
+      const name = `slip-${Date.now()}.jpg`;
+      if (Platform.OS === "web") {
+        const blob = await (await fetch(asset.uri)).blob();
+        form.append("file", blob, name);
+      } else {
+        form.append("file", { uri: asset.uri, name, type: "image/jpeg" } as any);
+      }
+      const up = await apiFetch("/upload", { method: "POST", body: form }, token);
+      const upd = await apiFetch(`/entries/${id}/slip`, { method: "POST", body: JSON.stringify({ slip_photo_path: up.path }) }, token);
+      setE(upd);
+      const bits = [upd.slip_ocr_weight_kg != null ? `${upd.slip_ocr_weight_kg} kg` : null, upd.slip_ocr_vehicle_number ? `🚚 ${upd.slip_ocr_vehicle_number}` : null].filter(Boolean).join(" · ");
+      toast(bits ? `Slip attached — OCR: ${bits}` : "Slip attached", "success");
+      if (upd.slip_mismatch_flag) toast("⚠ Slip differs from entry — flagged for review", "warning");
+    } catch (err: any) { toast(err.message || "Slip attach failed", "error"); }
+    finally { setSlipBusy(false); }
+  };
 
   const load = useCallback(async () => {
     if (!id || !token) return;
@@ -143,12 +169,22 @@ export default function OfficeEntryDetail() {
             </View>
           ) : null}
 
-          {e.slip_photo_path ? (
-            <View style={{ marginTop: spacing.md }}>
-              <Text style={s.sectionTitle}>Weighment slip</Text>
-              <Image source={{ uri: fileUrl(e.slip_photo_path, token) }} style={s.slip} resizeMode="contain" />
-            </View>
-          ) : null}
+          <View style={{ marginTop: spacing.md }}>
+            <Text style={s.sectionTitle}>Weighment slip</Text>
+            {e.slip_photo_path ? (
+              <View>
+                <Image source={{ uri: fileUrl(e.slip_photo_path, token) }} style={s.slip} resizeMode="contain" />
+                <Pressable onPress={attachSlip} disabled={slipBusy} style={[s.secondary, { marginTop: 8, alignSelf: "flex-start", paddingHorizontal: 12 }, slipBusy && { opacity: 0.5 }]} testID="office-slip-replace">
+                  <Text style={s.secondaryTxt}>{slipBusy ? "..." : "⇪ REPLACE SLIP"}</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={attachSlip} disabled={slipBusy} style={s.addSlip} testID="office-slip-add">
+                <Text style={s.addSlipTxt}>{slipBusy ? "UPLOADING + READING..." : "📷 ADD WEIGHMENT SLIP PHOTO"}</Text>
+                <Text style={{ fontSize: 11, color: colors.muted, marginTop: 4 }}>Auto-reads weight & vehicle number from the slip</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
 
         {/* RIGHT: editable */}
@@ -196,7 +232,6 @@ export default function OfficeEntryDetail() {
         </View>
       </View>
 
-      {user ? null : null}
     </View>
   );
 }
@@ -246,6 +281,8 @@ const s = StyleSheet.create({
   liTd: { fontSize: 12, color: colors.onSurface },
 
   slip: { width: "100%", aspectRatio: 1.3, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  addSlip: { padding: spacing.lg, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.brand, backgroundColor: colors.brandTertiary, alignItems: "center" },
+  addSlipTxt: { fontSize: 13, fontWeight: "900", color: colors.onSurface, letterSpacing: 1 },
 
   fieldLbl: { fontSize: 10, fontWeight: "900", letterSpacing: 2, color: colors.muted, marginBottom: 4 },
   input: { borderWidth: 1.5, borderColor: colors.border, padding: 10, fontSize: 14, color: colors.onSurface, backgroundColor: colors.surface },

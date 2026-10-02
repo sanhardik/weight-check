@@ -800,18 +800,77 @@ async def create_outward(body: OutwardCreate, user: dict = Depends(require_role(
 @api_router.get("/entries", response_model=List[EntryOut])
 async def list_entries(
     direction: Optional[str] = None,
+    search: Optional[str] = None,
     limit: int = 200,
     user: dict = Depends(current_user),
 ):
     q: dict = {}
     if direction in ("inward", "outward"):
         q["direction"] = direction
+    if search and search.strip():
+        rx = {"$regex": re.escape(search.strip()), "$options": "i"}
+        q["$or"] = [
+            {"entry_number": rx}, {"vehicle_number": rx}, {"invoice_no": rx},
+            {"party_name": rx}, {"broker_name": rx}, {"driver_name": rx},
+        ]
     cur = db.entries.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     out = []
     async for e in cur:
         e = await _enrich_entry(e, user)
         out.append(EntryOut(**e))
     return out
+
+
+class SlipAttach(BaseModel):
+    slip_photo_path: str
+
+
+@api_router.post("/entries/{entry_id}/slip", response_model=EntryOut)
+async def attach_slip(entry_id: str, body: SlipAttach, user: dict = Depends(current_user)):
+    """Attach (or replace) the weighment slip photo AFTER the entry was saved.
+    - Labour may only ADD a slip when the entry has none (prevents tampering).
+    - Office/Admin may replace at any time.
+    The slip is re-OCRed (weight + vehicle) and the slip-mismatch flag is recomputed."""
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if e.get("slip_photo_path") and user["role"] == "labour":
+        raise HTTPException(status_code=400, detail="Slip already attached — contact office to change it")
+
+    upload = await db.uploads.find_one({"path": body.slip_photo_path}, {"_id": 0})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if user["role"] == "labour" and upload.get("owner_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Best-effort OCR — a failed read must not block attaching the slip
+    ocr_weight: Optional[float] = None
+    ocr_vehicle: Optional[str] = None
+    try:
+        data, mime = await run_in_threadpool(_sync_get_object, body.slip_photo_path)
+        ocr = await _ocr_slip_bytes(data, mime, f"slip-attach-{entry_id[:8]}")
+        ocr_weight, ocr_vehicle = ocr.get("weight_kg"), ocr.get("vehicle_number")
+    except Exception as ex:
+        logger.warning(f"Slip OCR after attach failed for {entry_id}: {ex}")
+
+    sflag, sdet = compute_slip_mismatch(e.get("actual_weight_kg"), e.get("vehicle_number"), ocr_weight, ocr_vehicle)
+    patch = {
+        "slip_photo_path": body.slip_photo_path,
+        "slip_ocr_weight_kg": ocr_weight,
+        "slip_ocr_vehicle_number": ocr_vehicle,
+        "slip_mismatch_flag": sflag,
+        "slip_mismatch_details": sdet,
+    }
+    await db.entries.update_one({"id": entry_id}, {"$set": patch})
+    await _push_history(entry_id, [{
+        "field": "slip_photo_path",
+        "old": e.get("slip_photo_path") or "—",
+        "new": body.slip_photo_path,
+        "by": user["id"], "by_name": user.get("name"), "by_role": user.get("role"), "at": now_utc(),
+    }])
+    e = await db.entries.find_one({"id": entry_id}, {"_id": 0})
+    e = await _enrich_entry(e, user)
+    return EntryOut(**e)
 
 
 @api_router.get("/entries/{entry_id}", response_model=EntryOut)
@@ -1813,6 +1872,55 @@ async def voice_transcribe(file: UploadFile = File(...), user: dict = Depends(cu
 
 
 # ---------- Vision OCR: read weight from slip ----------
+async def _ocr_slip_bytes(data: bytes, mime: str, session_prefix: str) -> dict:
+    """OCR a weighment slip image via OpenAI vision (Emergent key).
+    Returns {weight_kg, vehicle_number, confidence, raw}. Raises on LLM failure."""
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        mime = "image/jpeg"
+    img_b64 = base64.b64encode(data).decode("ascii")
+
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+    chat = LlmChat(
+        api_key=EMERGENT_KEY,
+        session_id=f"{session_prefix}-{uuid.uuid4().hex[:8]}",
+        system_message=(
+            "You are an OCR assistant for Indian steel weighment slips. "
+            "Read numbers printed on the slip. The slip shows GROSS, TARE, and NET weights in kilograms. "
+            "ALWAYS return the NET weight when present; if only one weight is shown, return that. "
+            "Also read the vehicle / truck registration number printed on the slip "
+            "(Indian format like MH12AB1234, may contain spaces or dashes). "
+            "Respond ONLY as compact JSON: {\"weight_kg\": <number or null>, \"vehicle_number\": <string or null>, \"unit\": \"kg\", \"confidence\": <0..1>, \"raw\": \"<short text seen>\"}. "
+            "If no weight is clearly visible, use null. If no vehicle number is clearly visible, use null."
+        ),
+    ).with_model("openai", "gpt-4o-mini")
+
+    user_msg = UserMessage(
+        text="Extract the NET weight in kilograms and the vehicle registration number from this weighment slip. Return JSON only.",
+        file_contents=[ImageContent(image_base64=img_b64)],
+    )
+    response = await chat.send_message(user_msg)
+    text_out = str(response) if response is not None else ""
+
+    out = {"weight_kg": None, "vehicle_number": None, "confidence": 0.0, "raw": ""}
+    try:
+        m = re.search(r"\{.*\}", text_out, re.S)
+        if m:
+            parsed = json.loads(m.group(0))
+            w = parsed.get("weight_kg")
+            if isinstance(w, (int, float)):
+                out["weight_kg"] = float(w)
+            v = parsed.get("vehicle_number")
+            if isinstance(v, str) and v.strip():
+                out["vehicle_number"] = v.strip().upper()
+            out["confidence"] = float(parsed.get("confidence", 0.0))
+            out["raw"] = str(parsed.get("raw", ""))[:200]
+    except Exception:
+        pass
+    if not out["raw"]:
+        out["raw"] = text_out[:160]
+    return out
+
+
 @api_router.post("/vision/weight")
 async def vision_weight(
     file: Optional[UploadFile] = File(None),
@@ -1843,78 +1951,17 @@ async def vision_weight(
     if not data or len(data) < 500:
         raise HTTPException(status_code=400, detail="Image too small")
 
-    # Normalise mime
-    if mime not in ("image/jpeg", "image/png", "image/webp"):
-        mime = "image/jpeg"
-
-    img_b64 = base64.b64encode(data).decode("ascii")
-
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-        chat = LlmChat(
-            api_key=EMERGENT_KEY,
-            session_id=f"vision-{user['id']}-{uuid.uuid4().hex[:8]}",
-            system_message=(
-                "You are an OCR assistant for Indian steel weighment slips. "
-                "Read numbers printed on the slip. The slip shows GROSS, TARE, and NET weights in kilograms. "
-                "ALWAYS return the NET weight when present; if only one weight is shown, return that. "
-                "Also read the vehicle / truck registration number printed on the slip "
-                "(Indian format like MH12AB1234, may contain spaces or dashes). "
-                "Respond ONLY as compact JSON: {\"weight_kg\": <number or null>, \"vehicle_number\": <string or null>, \"unit\": \"kg\", \"confidence\": <0..1>, \"raw\": \"<short text seen>\"}. "
-                "If no weight is clearly visible, use null. If no vehicle number is clearly visible, use null."
-            ),
-        ).with_model("openai", "gpt-4o-mini")
-
-        user_msg = UserMessage(
-            text="Extract the NET weight in kilograms and the vehicle registration number from this weighment slip. Return JSON only.",
-            file_contents=[ImageContent(image_base64=img_b64)],
-        )
-
-        # Prefer non-streaming for a short JSON response
-        response = await chat.send_message(user_msg)
-        text_out = str(response) if response is not None else ""
+        ocr = await _ocr_slip_bytes(data, mime, f"vision-{user['id']}")
     except Exception as e:
         logger.error(f"Vision OCR failed: {e}")
         raise HTTPException(status_code=502, detail=f"Vision read failed: {e}")
 
-    # Extract JSON from response
-    weight_kg: Optional[float] = None
-    vehicle_number: Optional[str] = None
-    confidence: float = 0.0
-    raw_text = ""
-    try:
-        # Find a JSON object in the response (model may wrap in ```)
-        m = re.search(r"\{.*\}", text_out, re.S)
-        if m:
-            parsed = json.loads(m.group(0))
-            w = parsed.get("weight_kg")
-            if isinstance(w, (int, float)):
-                weight_kg = float(w)
-            v = parsed.get("vehicle_number")
-            if isinstance(v, str) and v.strip():
-                vehicle_number = v.strip().upper()
-            confidence = float(parsed.get("confidence", 0.0))
-            raw_text = str(parsed.get("raw", ""))[:200]
-    except Exception:
-        pass
-
-    # Fallback: regex a plausible kg number
-    if weight_kg is None:
-        for m in re.finditer(r"(\d{2,6}(?:\.\d{1,3})?)\s*(?:kg|KG|kilo)?", text_out):
-            try:
-                val = float(m.group(1))
-                if 1 <= val <= 100000:
-                    weight_kg = val
-                    confidence = max(confidence, 0.4)
-                    break
-            except Exception:
-                pass
-
     return {
-        "weight_kg": weight_kg,
-        "vehicle_number": vehicle_number,
-        "confidence": confidence,
-        "raw": raw_text or (text_out[:160] if text_out else ""),
+        "weight_kg": ocr.get("weight_kg"),
+        "vehicle_number": ocr.get("vehicle_number"),
+        "confidence": ocr.get("confidence", 0.0),
+        "raw": ocr.get("raw", ""),
     }
 
 

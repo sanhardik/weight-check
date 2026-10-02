@@ -56,6 +56,14 @@ Simple, bilingual (English/Hindi) inventory system usable by labourers with basi
 ## Weight Formula
 `theoretical_weight_kg = thickness_mm × width_mm × length_mm × pieces × 7.85e-6`
 
+## Iteration 12 — Late Weighment Slip Attach (shipped)
+- **`POST /api/entries/{id}/slip`**: attach (or office/admin replace) the weighment slip photo AFTER the entry was saved. Labour may only ADD when no slip exists (400 otherwise — prevents tampering); office/admin may replace anytime (audit-logged as `slip_photo_path` WAS→NOW). Slip is re-OCRed on attach (weight + vehicle) and `slip_mismatch_flag` recomputed — a late slip with wrong data still flags the entry for office review.
+- Vision endpoint refactored to share `_ocr_slip_bytes` helper (iter9 slip tests stay green).
+- **Frontend**: mobile entry detail "SLIP PHOTO" section shows a dashed "add it now" box for all roles when missing (labour can attach via camera/gallery with ATTACHING+READING overlay + OCR toast); office/admin get REPLACE buttons. Labour home gets a "MY ENTRIES" tile. Office portal entry detail has the same ADD/REPLACE block.
+- **Server-side search**: `GET /entries?search=` matches entry no / vehicle / invoice / party / broker / driver (case-insensitive regex) — both mobile entries list and office portal table now search the WHOLE DB (debounced 350 ms), not just the first 200 rows.
+
+201/201 backend tests pass (9 new iter12). Full E2E verified by testing agent: labour attach flow with real OCR (2500 kg + MH12AB1234 read from test slip), labour 400/403 blocks, office replace, history rows, portal + mobile UI.
+
 ## Iteration 11 — Office Web Portal + Tally Reminder (shipped)
 - **Office Web Portal** at `/office/*` — dedicated desktop-first route tree with sidebar nav (Dashboard · Entries · Parties · Inventory · Verifications · Reports) and own login at `/office/login`. Office staff never need the mobile app or Expo Go; they just open the preview URL. `app/index.tsx` auto-redirects office users on web to `/office`; labour attempting `/office/*` are redirected to `/home`. Admin can use either portal.
   - Pages: KPI dashboard (today inward/outward kg + pending-office pile + tally-mismatch count), filterable entries table (direction chips, pending/flagged toggles, search by entry/vehicle/invoice/party/broker, CSV export), two-column entry detail (facts + office form + correction + edit history + weighment-slip image + email invoice PDF), parties ledger (per-party rollup — entries/invoiced/pending/weight/last-activity/WhatsApp deep link), live inventory table with last-verified column, verifications queue (admin review buttons), reports (CSV + Party Statement PDF).
